@@ -3,9 +3,7 @@ package com.example.flutter_emirates_id_scanner
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
-import android.graphics.Color
-import android.graphics.Rect
+import android.graphics.*
 import android.os.Bundle
 import android.util.Log
 import android.view.View
@@ -15,13 +13,16 @@ import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.*
+import androidx.camera.core.Camera
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import androidx.exifinterface.media.ExifInterface
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileOutputStream
@@ -44,7 +45,12 @@ class EmiratesIdScannerActivity : AppCompatActivity() {
     private var scanningStep = ScanningStep.FRONT
     private var frontImagePath: String? = null
     private var backImagePath: String? = null
+    private var frontImageHash: String? = null
+    private var backImageHash: String? = null
     private var extractedData = mutableMapOf<String, String?>()
+    
+    // Rectangle bounds for cropping
+    private var rectangleBounds: RectF? = null
     
     enum class ScanningStep {
         FRONT, BACK, COMPLETED
@@ -150,47 +156,85 @@ class EmiratesIdScannerActivity : AppCompatActivity() {
     
     private fun createOverlayView(): View {
         return object : View(this) {
-            override fun onDraw(canvas: android.graphics.Canvas) {
+            override fun onDraw(canvas: Canvas) {
                 super.onDraw(canvas)
                 canvas.let { c ->
-                    val paint = android.graphics.Paint().apply {
-                        color = Color.WHITE
-                        style = android.graphics.Paint.Style.STROKE
-                        strokeWidth = 4f
-                    }
-                    
-                    // Draw ID card frame
+                    // Calculate rectangle bounds for Emirates ID scanning
                     val centerX = width / 2f
                     val centerY = height / 2f
-                    val cardWidth = width * 0.8f
-                    val cardHeight = cardWidth * 0.63f // Emirates ID aspect ratio
+                    val cardWidth = width * 0.85f  // Slightly larger for better visibility
+                    val cardHeight = cardWidth * 0.63f // Emirates ID aspect ratio (85.6mm × 53.98mm)
                     
                     val left = centerX - cardWidth / 2
                     val top = centerY - cardHeight / 2
                     val right = centerX + cardWidth / 2
                     val bottom = centerY + cardHeight / 2
                     
-                    c.drawRect(left, top, right, bottom, paint)
+                    // Store rectangle bounds for reference
+                    rectangleBounds = RectF(left, top, right, bottom)
                     
-                    // Draw corner guides
-                    val cornerLength = 50f
-                    paint.strokeWidth = 8f
+                    // Draw semi-black overlay outside scanning rectangle (darker overlay)
+                    val overlayPaint = Paint().apply {
+                        color = Color.parseColor("#00000000") // More opaque black 
+                        style = Paint.Style.FILL
+                        isAntiAlias = true
+                    }
+                    
+                    // Draw overlay on all four sides to create scanning window
+                    c.drawRect(0f, 0f, width.toFloat(), top, overlayPaint) // Top area
+                    c.drawRect(0f, bottom, width.toFloat(), height.toFloat(), overlayPaint) // Bottom area
+                    c.drawRect(0f, top, left, bottom, overlayPaint) // Left area
+                    c.drawRect(right, top, width.toFloat(), bottom, overlayPaint) // Right area
+                    
+                    // Draw Emirates ID scanning frame with enhanced visibility
+                    val framePaint = Paint().apply {
+                        color = Color.WHITE
+                        style = Paint.Style.STROKE
+                        strokeWidth = 3f
+                        isAntiAlias = true
+                    }
+                    
+                    // Draw main scanning rectangle
+                    c.drawRect(left, top, right, bottom, framePaint)
+                    
+                    // Draw corner guides for better alignment
+                    val cornerLength = 40f
+                    val cornerPaint = Paint().apply {
+                        color = Color.parseColor("#00E676") // Green color for corners
+                        style = Paint.Style.STROKE
+                        strokeWidth = 6f
+                        isAntiAlias = true
+                        strokeCap = Paint.Cap.ROUND
+                    }
                     
                     // Top-left corner
-                    c.drawLine(left, top, left + cornerLength, top, paint)
-                    c.drawLine(left, top, left, top + cornerLength, paint)
+                    c.drawLine(left, top, left + cornerLength, top, cornerPaint)
+                    c.drawLine(left, top, left, top + cornerLength, cornerPaint)
                     
                     // Top-right corner
-                    c.drawLine(right - cornerLength, top, right, top, paint)
-                    c.drawLine(right, top, right, top + cornerLength, paint)
+                    c.drawLine(right - cornerLength, top, right, top, cornerPaint)
+                    c.drawLine(right, top, right, top + cornerLength, cornerPaint)
                     
                     // Bottom-left corner
-                    c.drawLine(left, bottom - cornerLength, left, bottom, paint)
-                    c.drawLine(left, bottom, left + cornerLength, bottom, paint)
+                    c.drawLine(left, bottom - cornerLength, left, bottom, cornerPaint)
+                    c.drawLine(left, bottom, left + cornerLength, bottom, cornerPaint)
                     
                     // Bottom-right corner
-                    c.drawLine(right - cornerLength, bottom, right, bottom, paint)
-                    c.drawLine(right, bottom - cornerLength, right, bottom, paint)
+                    c.drawLine(right - cornerLength, bottom, right, bottom, cornerPaint)
+                    c.drawLine(right, bottom - cornerLength, right, bottom, cornerPaint)
+                    
+                    // Draw center alignment guide
+                    val centerLinePaint = Paint().apply {
+                        color = Color.parseColor("#4DFFFFFF") // Semi-transparent white
+                        style = Paint.Style.STROKE
+                        strokeWidth = 1f
+                        pathEffect = android.graphics.DashPathEffect(floatArrayOf(10f, 10f), 0f)
+                    }
+                    
+                    // Horizontal center line
+                    c.drawLine(left + 20f, centerY, right - 20f, centerY, centerLinePaint)
+                    // Vertical center line  
+                    c.drawLine(centerX, top + 20f, centerX, bottom - 20f, centerLinePaint)
                 }
             }
         }.apply {
@@ -310,18 +354,188 @@ class EmiratesIdScannerActivity : AppCompatActivity() {
                text.contains(Regex("\\d{2}/\\d{2}/\\d{4}")) // Date pattern
     }
     
+    private fun calculateImageHash(imagePath: String): String {
+        return try {
+            val file = File(imagePath)
+            val bytes = file.readBytes()
+            val digest = java.security.MessageDigest.getInstance("MD5")
+            val hashBytes = digest.digest(bytes)
+            hashBytes.joinToString("") { "%02x".format(it) }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to calculate hash for $imagePath", e)
+            ""
+        }
+    }
+    
+    private fun areImagesSimilar(hash1: String?, hash2: String?): Boolean {
+        return hash1 != null && hash2 != null && hash1 == hash2
+    }
+    
+    private fun getExifOrientation(imagePath: String): Int {
+        return try {
+            val exif = ExifInterface(imagePath)
+            exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to read EXIF data: ${e.message}")
+            ExifInterface.ORIENTATION_NORMAL
+        }
+    }
+    
+    private fun rotateBitmap(bitmap: Bitmap, orientation: Int): Bitmap {
+        val matrix = Matrix()
+        when (orientation) {
+            ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+            ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+            ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+            ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.preScale(-1f, 1f)
+            ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.preScale(1f, -1f)
+            ExifInterface.ORIENTATION_TRANSPOSE -> {
+                matrix.postRotate(90f)
+                matrix.preScale(-1f, 1f)
+            }
+            ExifInterface.ORIENTATION_TRANSVERSE -> {
+                matrix.postRotate(-90f)
+                matrix.preScale(-1f, 1f)
+            }
+            else -> return bitmap // No rotation needed
+        }
+        
+        return try {
+            val rotatedBitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+            if (rotatedBitmap != bitmap) {
+                bitmap.recycle() // Recycle original bitmap to free memory
+            }
+            rotatedBitmap
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to rotate bitmap: ${e.message}")
+            bitmap // Return original bitmap if rotation fails
+        }
+    }
+    
+    private fun cropImageToRectangle(originalPath: String, outputPath: String): Boolean {
+        return try {
+            // Get EXIF orientation before decoding
+            val exifOrientation = getExifOrientation(originalPath)
+            Log.d(TAG, "EXIF orientation: $exifOrientation")
+            
+            var originalBitmap = BitmapFactory.decodeFile(originalPath)
+            if (originalBitmap == null) {
+                Log.e(TAG, "Failed to decode image: $originalPath")
+                return false
+            }
+            
+            Log.d(TAG, "Original image size before rotation: ${originalBitmap.width} x ${originalBitmap.height}")
+            
+            // Apply EXIF rotation to fix image orientation
+            originalBitmap = rotateBitmap(originalBitmap, exifOrientation)
+            
+            Log.d(TAG, "Original image size after rotation: ${originalBitmap.width} x ${originalBitmap.height}")
+            
+            // Get the viewfinder dimensions (which should match overlay dimensions)
+            val overlayWidth = viewFinder.width.toFloat()
+            val overlayHeight = viewFinder.height.toFloat()
+            
+            Log.d(TAG, "Preview size: $overlayWidth x $overlayHeight")
+            
+            // Calculate Emirates ID card dimensions (must match overlay calculations exactly)
+            val cardWidth = overlayWidth * 0.85f  // Same as overlay
+            val cardHeight = cardWidth * 0.63f // Emirates ID aspect ratio
+            
+            val centerX = overlayWidth / 2f
+            val centerY = overlayHeight / 2f
+            
+            val rectLeft = centerX - cardWidth / 2f
+            val rectTop = centerY - cardHeight / 2f
+            val rectWidth = cardWidth
+            val rectHeight = cardHeight
+            
+            Log.d(TAG, "Card rectangle: left=$rectLeft, top=$rectTop, width=$rectWidth, height=$rectHeight")
+            
+            // Calculate how the camera preview maps to the captured image
+            // The preview might be scaled/cropped to fit the view
+            val imageAspectRatio = originalBitmap.width.toFloat() / originalBitmap.height.toFloat()
+            val previewAspectRatio = overlayWidth / overlayHeight
+            
+            val scaleX: Float
+            val scaleY: Float
+            val offsetX: Float
+            val offsetY: Float
+            
+            if (imageAspectRatio > previewAspectRatio) {
+                // Image is wider than preview - image is cropped horizontally
+                scaleY = originalBitmap.height.toFloat() / overlayHeight
+                scaleX = scaleY
+                offsetY = 0f
+                offsetX = (originalBitmap.width - overlayWidth * scaleX) / 2f
+            } else {
+                // Image is taller than preview - image is cropped vertically  
+                scaleX = originalBitmap.width.toFloat() / overlayWidth
+                scaleY = scaleX
+                offsetX = 0f
+                offsetY = (originalBitmap.height - overlayHeight * scaleY) / 2f
+            }
+            
+            Log.d(TAG, "Scale: x=$scaleX, y=$scaleY, Offset: x=$offsetX, y=$offsetY")
+            
+            // Map overlay coordinates to image coordinates
+            val cropLeft = (rectLeft * scaleX + offsetX).toInt().coerceAtLeast(0)
+            val cropTop = (rectTop * scaleY + offsetY).toInt().coerceAtLeast(0)
+            val cropWidth = (rectWidth * scaleX).toInt()
+                .coerceAtMost(originalBitmap.width - cropLeft)
+            val cropHeight = (rectHeight * scaleY).toInt()
+                .coerceAtMost(originalBitmap.height - cropTop)
+            
+            Log.d(TAG, "Crop bounds: left=$cropLeft, top=$cropTop, width=$cropWidth, height=$cropHeight")
+            
+            if (cropWidth <= 0 || cropHeight <= 0) {
+                Log.e(TAG, "Invalid crop dimensions")
+                return false
+            }
+            
+            val croppedBitmap = Bitmap.createBitmap(
+                originalBitmap, 
+                cropLeft, 
+                cropTop, 
+                cropWidth, 
+                cropHeight
+            )
+            
+            // Save cropped bitmap with corrected orientation
+            FileOutputStream(outputPath).use { out ->
+                croppedBitmap.compress(Bitmap.CompressFormat.JPEG, 95, out)
+            }
+            
+            Log.d(TAG, "Cropped image saved: $outputPath (${croppedBitmap.width} x ${croppedBitmap.height})")
+            
+            originalBitmap.recycle()
+            croppedBitmap.recycle()
+            
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to crop image: ${e.message}", e)
+            false
+        }
+    }
+    
     private fun captureImage() {
         val imageCapture = imageCapture ?: return
         
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
-        val fileName = when (scanningStep) {
+        val tempFileName = when (scanningStep) {
+            ScanningStep.FRONT -> "emirates_id_front_temp_$timestamp.jpg"
+            ScanningStep.BACK -> "emirates_id_back_temp_$timestamp.jpg"
+            ScanningStep.COMPLETED -> return
+        }
+        
+        val finalFileName = when (scanningStep) {
             ScanningStep.FRONT -> "emirates_id_front_$timestamp.jpg"
             ScanningStep.BACK -> "emirates_id_back_$timestamp.jpg"
             ScanningStep.COMPLETED -> return
         }
         
-        val outputFile = File(cacheDir, fileName)
-        val outputFileOptions = ImageCapture.OutputFileOptions.Builder(outputFile).build()
+        val tempFile = File(cacheDir, tempFileName)
+        val finalFile = File(cacheDir, finalFileName)
+        val outputFileOptions = ImageCapture.OutputFileOptions.Builder(tempFile).build()
         
         imageCapture.takePicture(
             outputFileOptions,
@@ -333,22 +547,100 @@ class EmiratesIdScannerActivity : AppCompatActivity() {
                 }
                 
                 override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                    val imagePath = outputFile.absolutePath
-                    Log.d(TAG, "Image captured: $imagePath")
+                    val tempImagePath = tempFile.absolutePath
+                    Log.d(TAG, "Temp image captured: $tempImagePath")
+                    
+                    // Crop the image to rectangle area
+                    val cropSuccess = cropImageToRectangle(tempImagePath, finalFile.absolutePath)
+                    
+                    if (!cropSuccess) {
+                        Log.e(TAG, "Failed to crop image, but continuing...")
+                        // Show guidance message instead of finishing with error
+                        runOnUiThread {
+                            when (scanningStep) {
+                                ScanningStep.FRONT -> {
+                                    instructionText.text = "Please try scanning the front side again"
+                                }
+                                ScanningStep.BACK -> {
+                                    instructionText.text = "Please try scanning the back side again"
+                                }
+                                ScanningStep.COMPLETED -> return@runOnUiThread
+                            }
+                        }
+                        // Reset instruction after delay
+                        lifecycleScope.launch {
+                            delay(3000)
+                            runOnUiThread {
+                                updateInstruction()
+                            }
+                        }
+                        // Clean up temp file and continue
+                        tempFile.delete()
+                        return
+                    }
+                    
+                    // Calculate hash for duplicate detection
+                    val imageHash = calculateImageHash(finalFile.absolutePath)
                     
                     when (scanningStep) {
                         ScanningStep.FRONT -> {
-                            frontImagePath = imagePath
+                            frontImagePath = finalFile.absolutePath
+                            frontImageHash = imageHash
                             scanningStep = ScanningStep.BACK
-                            updateInstruction()
+                            
+                            // Show completion message for front side
+                            runOnUiThread {
+                                instructionText.text = "تم مسح الوجه الأمامي بنجاح. الآن قم بمسح الوجه الخلفي للهوية"
+                            }
+                            
+                            // Delay before showing back instruction
+                            lifecycleScope.launch {
+                                delay(2000)
+                                runOnUiThread {
+                                    updateInstruction()
+                                }
+                            }
                         }
                         ScanningStep.BACK -> {
-                            backImagePath = imagePath
+                            // Check if back image is different from front
+                            if (areImagesSimilar(frontImageHash, imageHash)) {
+                                Log.w(TAG, "Back image is similar to front image")
+                                // Show error message and stay on back scanning
+                                runOnUiThread {
+                                    instructionText.text = "الصورة مشابهة للوجه الأمامي، قم بمسح الوجه الخلفي"
+                                }
+                                // Delete the duplicate image
+                                finalFile.delete()
+                                // Reset instruction after delay
+                                lifecycleScope.launch {
+                                    delay(3000)
+                                    runOnUiThread {
+                                        updateInstruction()
+                                    }
+                                }
+                                return
+                            }
+                            
+                            backImagePath = finalFile.absolutePath
+                            backImageHash = imageHash
                             scanningStep = ScanningStep.COMPLETED
-                            processCompleted()
+                            
+                            // Show completion message for back side
+                            runOnUiThread {
+                                instructionText.text = "تم مسح الوجه الخلفي بنجاح. جاري معالجة البيانات..."
+                            }
+                            
+                            // Delay before processing
+                            lifecycleScope.launch {
+                                delay(1500)
+                                processCompleted()
+                            }
                         }
                         ScanningStep.COMPLETED -> return
                     }
+                    
+                    // Clean up temp file
+                    tempFile.delete()
                 }
             }
         )

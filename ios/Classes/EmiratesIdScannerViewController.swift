@@ -1,6 +1,7 @@
 import UIKit
 import AVFoundation
 import Vision
+import CryptoKit
 
 class EmiratesIdScannerViewController: UIViewController {
     
@@ -16,7 +17,12 @@ class EmiratesIdScannerViewController: UIViewController {
     private var scanningStep: ScanningStep = .front
     private var frontImagePath: String?
     private var backImagePath: String?
+    private var frontImageHash: String?
+    private var backImageHash: String?
     private var extractedData: [String: String?] = [:]
+    
+    // Rectangle bounds for cropping
+    private var rectangleBounds: CGRect = .zero
     
     var onScanComplete: ((Result<[String: Any?], Error>) -> Void)?
     
@@ -69,6 +75,13 @@ class EmiratesIdScannerViewController: UIViewController {
             overlayView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             overlayView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
+        
+        // Update rectangle bounds after layout
+        DispatchQueue.main.async {
+            if let cardOverlay = self.overlayView as? CardOverlayView {
+                self.rectangleBounds = cardOverlay.rectangleBounds
+            }
+        }
     }
     
     private func setupInstructionLabel() {
@@ -221,6 +234,118 @@ class EmiratesIdScannerViewController: UIViewController {
         }
     }
     
+    // MARK: - Image Processing Helpers
+    private func calculateImageHash(_ imagePath: String) -> String {
+        guard let imageData = FileManager.default.contents(atPath: imagePath) else {
+            return ""
+        }
+        
+        if #available(iOS 13.0, *) {
+            let digest = Insecure.MD5.hash(data: imageData)
+            return digest.map { String(format: "%02hhx", $0) }.joined()
+        } else {
+            // Fallback for iOS < 13
+            return imageData.base64EncodedString()
+        }
+    }
+    
+    private func areImagesSimilar(_ hash1: String?, _ hash2: String?) -> Bool {
+        guard let hash1 = hash1, let hash2 = hash2 else { return false }
+        return hash1 == hash2
+    }
+    
+    private func cropImageToRectangle(originalPath: String, outputPath: String) -> Bool {
+        guard let originalImage = UIImage(contentsOfFile: originalPath) else {
+            print("Failed to load image from: \(originalPath)")
+            return false
+        }
+        
+        print("Original image size: \(originalImage.size)")
+        
+        // Get the preview layer dimensions
+        let previewSize = videoPreviewLayer.bounds.size
+        print("Preview layer size: \(previewSize)")
+        
+        // Calculate Emirates ID card dimensions (must match overlay calculations exactly)
+        let cardWidth = previewSize.width * 0.85  // Same as overlay
+        let cardHeight = cardWidth * 0.63 // Emirates ID aspect ratio
+        
+        let centerX = previewSize.width / 2
+        let centerY = previewSize.height / 2
+        
+        let rectLeft = centerX - cardWidth / 2
+        let rectTop = centerY - cardHeight / 2
+        
+        let rectangleFrame = CGRect(x: rectLeft, y: rectTop, width: cardWidth, height: cardHeight)
+        print("Card rectangle: \(rectangleFrame)")
+        
+        // Calculate how the camera preview maps to the captured image
+        let imageSize = originalImage.size
+        let imageAspectRatio = imageSize.width / imageSize.height
+        let previewAspectRatio = previewSize.width / previewSize.height
+        
+        let scaleX: CGFloat
+        let scaleY: CGFloat
+        let offsetX: CGFloat
+        let offsetY: CGFloat
+        
+        if imageAspectRatio > previewAspectRatio {
+            // Image is wider than preview - image is cropped horizontally
+            scaleY = imageSize.height / previewSize.height
+            scaleX = scaleY
+            offsetY = 0
+            offsetX = (imageSize.width - previewSize.width * scaleX) / 2
+        } else {
+            // Image is taller than preview - image is cropped vertically
+            scaleX = imageSize.width / previewSize.width
+            scaleY = scaleX
+            offsetX = 0
+            offsetY = (imageSize.height - previewSize.height * scaleY) / 2
+        }
+        
+        print("Scale: x=\(scaleX), y=\(scaleY), Offset: x=\(offsetX), y=\(offsetY)")
+        
+        // Map preview coordinates to image coordinates
+        let cropRect = CGRect(
+            x: rectLeft * scaleX + offsetX,
+            y: rectTop * scaleY + offsetY,
+            width: cardWidth * scaleX,
+            height: cardHeight * scaleY
+        )
+        
+        // Ensure crop rect is within image bounds
+        let clampedRect = CGRect(
+            x: max(0, cropRect.origin.x),
+            y: max(0, cropRect.origin.y),
+            width: min(imageSize.width - max(0, cropRect.origin.x), cropRect.width),
+            height: min(imageSize.height - max(0, cropRect.origin.y), cropRect.height)
+        )
+        
+        print("Crop rect: \(clampedRect)")
+        
+        guard clampedRect.width > 0 && clampedRect.height > 0,
+              let cgImage = originalImage.cgImage?.cropping(to: clampedRect) else {
+            print("Invalid crop dimensions or failed to crop")
+            return false
+        }
+        
+        let croppedImage = UIImage(cgImage: cgImage, scale: originalImage.scale, orientation: originalImage.imageOrientation)
+        
+        guard let croppedImageData = croppedImage.jpegData(compressionQuality: 0.95) else {
+            print("Failed to convert cropped image to JPEG")
+            return false
+        }
+        
+        do {
+            try croppedImageData.write(to: URL(fileURLWithPath: outputPath))
+            print("Cropped image saved: \(outputPath) (\(croppedImage.size))")
+            return true
+        } catch {
+            print("Failed to save cropped image: \(error)")
+            return false
+        }
+    }
+    
     private func captureImage() {
         let settings = AVCapturePhotoSettings()
         settings.flashMode = .off
@@ -336,35 +461,108 @@ extension EmiratesIdScannerViewController: AVCapturePhotoCaptureDelegate {
         }
         
         let timestamp = DateFormatter().string(from: Date()).replacingOccurrences(of: " ", with: "_")
-        let fileName: String
+        let tempFileName: String
+        let finalFileName: String
         
         switch scanningStep {
         case .front:
-            fileName = "emirates_id_front_\(timestamp).jpg"
+            tempFileName = "emirates_id_front_temp_\(timestamp).jpg"
+            finalFileName = "emirates_id_front_\(timestamp).jpg"
         case .back:
-            fileName = "emirates_id_back_\(timestamp).jpg"
+            tempFileName = "emirates_id_back_temp_\(timestamp).jpg"
+            finalFileName = "emirates_id_back_\(timestamp).jpg"
         case .completed:
             return
         }
         
         let documentsPath = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        let imagePath = documentsPath.appendingPathComponent(fileName)
+        let tempImagePath = documentsPath.appendingPathComponent(tempFileName)
+        let finalImagePath = documentsPath.appendingPathComponent(finalFileName)
         
         do {
-            try imageData.write(to: imagePath)
+            // Save temp image first
+            try imageData.write(to: tempImagePath)
+            
+            // Crop the image to rectangle area
+            let cropSuccess = cropImageToRectangle(originalPath: tempImagePath.path, outputPath: finalImagePath.path)
+            
+            if !cropSuccess {
+                print("Failed to crop image, but continuing...")
+                // Show guidance message instead of error
+                DispatchQueue.main.async {
+                    switch self.scanningStep {
+                    case .front:
+                        self.instructionLabel.text = "يرجى إعادة مسح الوجه الأمامي للهوية"
+                    case .back:
+                        self.instructionLabel.text = "يرجى إعادة مسح الوجه الخلفي للهوية"
+                    case .completed:
+                        return
+                    }
+                }
+                // Reset instruction after delay
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                    self.updateInstruction()
+                }
+                // Clean up temp file and continue
+                try? FileManager.default.removeItem(at: tempImagePath)
+                return
+            }
+            
+            // Calculate hash for duplicate detection
+            let imageHash = calculateImageHash(finalImagePath.path)
             
             switch scanningStep {
             case .front:
-                frontImagePath = imagePath.path
+                frontImagePath = finalImagePath.path
+                frontImageHash = imageHash
                 scanningStep = .back
-                updateInstruction()
+                
+                // Show completion message for front side
+                DispatchQueue.main.async {
+                    self.instructionLabel.text = "تم مسح الوجه الأمامي بنجاح. الآن قم بمسح الوجه الخلفي للهوية"
+                }
+                
+                // Delay before showing back instruction
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                    self.updateInstruction()
+                }
             case .back:
-                backImagePath = imagePath.path
+                // Check if back image is different from front
+                if areImagesSimilar(frontImageHash, imageHash) {
+                    print("Back image is similar to front image")
+                    // Show error message and stay on back scanning
+                    DispatchQueue.main.async {
+                        self.instructionLabel.text = "الصورة مشابهة للوجه الأمامي، قم بمسح الوجه الخلفي"
+                    }
+                    // Delete the duplicate image
+                    try? FileManager.default.removeItem(at: finalImagePath)
+                    // Reset instruction after delay
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                        self.updateInstruction()
+                    }
+                    return
+                }
+                
+                backImagePath = finalImagePath.path
+                backImageHash = imageHash
                 scanningStep = .completed
-                processCompleted()
+                
+                // Show completion message for back side
+                DispatchQueue.main.async {
+                    self.instructionLabel.text = "تم مسح الوجه الخلفي بنجاح. جاري معالجة البيانات..."
+                }
+                
+                // Delay before processing
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    self.processCompleted()
+                }
             case .completed:
                 break
             }
+            
+            // Clean up temp file
+            try? FileManager.default.removeItem(at: tempImagePath)
+            
         } catch {
             handleError("Failed to save image: \(error.localizedDescription)")
         }
@@ -495,18 +693,17 @@ extension String {
 // MARK: - CardOverlayView
 class CardOverlayView: UIView {
     
+    private(set) var rectangleBounds: CGRect = .zero
+    
     override func draw(_ rect: CGRect) {
         super.draw(rect)
         
         guard let context = UIGraphicsGetCurrentContext() else { return }
         
-        context.setStrokeColor(UIColor.white.cgColor)
-        context.setLineWidth(3.0)
-        
         let centerX = bounds.width / 2
         let centerY = bounds.height / 2
-        let cardWidth = bounds.width * 0.8
-        let cardHeight = cardWidth * 0.63 // Emirates ID aspect ratio
+        let cardWidth = bounds.width * 0.85  // Slightly larger for better visibility
+        let cardHeight = cardWidth * 0.63 // Emirates ID aspect ratio (85.6mm × 53.98mm)
         
         let cardRect = CGRect(
             x: centerX - cardWidth / 2,
@@ -515,11 +712,34 @@ class CardOverlayView: UIView {
             height: cardHeight
         )
         
+        // Store rectangle bounds for cropping
+        rectangleBounds = cardRect
+        
+        // Draw semi-black overlay outside scanning rectangle (darker overlay)
+        context.setFillColor(UIColor.black.withAlphaComponent(0.7).cgColor) // More opaque black (70% opacity)
+        
+        // Top overlay
+        context.fill(CGRect(x: 0, y: 0, width: bounds.width, height: cardRect.minY))
+        
+        // Bottom overlay
+        context.fill(CGRect(x: 0, y: cardRect.maxY, width: bounds.width, height: bounds.height - cardRect.maxY))
+        
+        // Left overlay
+        context.fill(CGRect(x: 0, y: cardRect.minY, width: cardRect.minX, height: cardRect.height))
+        
+        // Right overlay
+        context.fill(CGRect(x: cardRect.maxX, y: cardRect.minY, width: bounds.width - cardRect.maxX, height: cardRect.height))
+        
+        // Draw ID card frame
+        context.setStrokeColor(UIColor.white.cgColor)
+        context.setLineWidth(3.0)
         context.stroke(cardRect)
         
-        // Draw corner guides
-        let cornerLength: CGFloat = 30
+        // Draw corner guides for better alignment
+        let cornerLength: CGFloat = 40
+        context.setStrokeColor(UIColor.systemGreen.cgColor) // Green color for corners
         context.setLineWidth(6.0)
+        context.setLineCap(.round)
         
         // Top-left corner
         context.move(to: CGPoint(x: cardRect.minX, y: cardRect.minY))
@@ -546,5 +766,26 @@ class CardOverlayView: UIView {
         context.addLine(to: CGPoint(x: cardRect.maxX, y: cardRect.maxY))
         
         context.strokePath()
+        
+        // Draw center alignment guides
+        context.setStrokeColor(UIColor.white.withAlphaComponent(0.3).cgColor) // Semi-transparent white
+        context.setLineWidth(1.0)
+        
+        // Set dashed line pattern
+        let dashPattern: [CGFloat] = [10.0, 10.0]
+        context.setLineDash(phase: 0, lengths: dashPattern)
+        
+        // Horizontal center line
+        context.move(to: CGPoint(x: cardRect.minX + 20, y: centerY))
+        context.addLine(to: CGPoint(x: cardRect.maxX - 20, y: centerY))
+        
+        // Vertical center line
+        context.move(to: CGPoint(x: centerX, y: cardRect.minY + 20))
+        context.addLine(to: CGPoint(x: centerX, y: cardRect.maxY - 20))
+        
+        context.strokePath()
+        
+        // Reset line dash
+        context.setLineDash(phase: 0, lengths: [])
     }
 }
