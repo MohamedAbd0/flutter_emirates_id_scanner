@@ -150,9 +150,9 @@ class EmiratesIdScannerActivity : AppCompatActivity() {
     
     private fun createOverlayView(): View {
         return object : View(this) {
-            override fun onDraw(canvas: android.graphics.Canvas?) {
+            override fun onDraw(canvas: android.graphics.Canvas) {
                 super.onDraw(canvas)
-                canvas?.let { c ->
+                canvas.let { c ->
                     val paint = android.graphics.Paint().apply {
                         color = Color.WHITE
                         style = android.graphics.Paint.Style.STROKE

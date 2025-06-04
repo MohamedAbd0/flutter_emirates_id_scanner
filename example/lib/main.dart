@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_emirates_id_scanner/flutter_emirates_id_scanner.dart';
@@ -131,11 +133,29 @@ class _MyAppState extends State<MyApp> {
                               _scanResult!.frontImagePath,
                               isPath: true,
                             ),
+
+                            if (_scanResult?.frontImagePath != null)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 8.0),
+                                child: Image.file(
+                                  File(_scanResult!.frontImagePath!),
+                                ),
+                              ),
+
+                            const SizedBox(height: 8),
                             _buildInfoRow(
                               'Back Image',
                               _scanResult!.backImagePath,
                               isPath: true,
                             ),
+
+                            if (_scanResult?.backImagePath != null)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 8.0),
+                                child: Image.file(
+                                  File(_scanResult!.backImagePath!),
+                                ),
+                              ),
                           ],
                         ),
                       ),
