@@ -1,0 +1,14 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+  package="com.example.flutter_emirates_id_scanner">
+  
+  <uses-permission android:name="android.permission.CAMERA" />
+  <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+  
+  <application>
+    <activity
+      android:name=".EmiratesIdScannerActivity"
+      android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
+      android:screenOrientation="portrait"
+      android:exported="false" />
+  </application>
+</manifest>
