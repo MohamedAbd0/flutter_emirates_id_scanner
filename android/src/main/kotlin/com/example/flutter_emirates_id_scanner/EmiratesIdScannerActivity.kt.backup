@@ -45,7 +45,6 @@ class EmiratesIdScannerActivity : AppCompatActivity() {
     
     private var scanningStep = ScanningStep.FRONT
     private var isCapturing = false  // Add capture state management
-    private var captureStartTime = 0L  // Track when capture started for timeout detection
     private var lastProcessTime = 0L  // Add timeout tracking
     private var frontImagePath: String? = null
     private var backImagePath: String? = null
@@ -255,8 +254,6 @@ class EmiratesIdScannerActivity : AppCompatActivity() {
             ScanningStep.BACK -> "قُم بمسح الوجه الخلفي للهوية"
             ScanningStep.COMPLETED -> "جيد"
         }
-        
-        Log.d(TAG, "updateInstruction() called - Setting instruction for ${scanningStep.name}: $instruction")
         instructionText.text = instruction
     }
     
@@ -330,30 +327,13 @@ class EmiratesIdScannerActivity : AppCompatActivity() {
     
     private inner class ImageAnalyzer : ImageAnalysis.Analyzer {
         override fun analyze(imageProxy: ImageProxy) {
-            // Check early if we're done with scanning
-            if (scanningStep == ScanningStep.COMPLETED) {
+            // Check early if we're done with scanning or currently capturing
+            if (scanningStep == ScanningStep.COMPLETED || isCapturing) {
+                if (isCapturing) {
+                    Log.v(TAG, "ImageAnalyzer: Skipping analysis - capture in progress for ${scanningStep.name}")
+                }
                 imageProxy.close()
                 return
-            }
-            
-            // Check if we're currently capturing with timeout protection
-            if (isCapturing) {
-                val currentTime = System.currentTimeMillis()
-                val captureElapsed = currentTime - captureStartTime
-                
-                // If capture has been in progress for more than 10 seconds, reset it
-                if (captureElapsed > 10000) {
-                    Log.w(TAG, "ImageAnalyzer: Capture timeout detected after ${captureElapsed}ms, resetting capture state")
-                    isCapturing = false
-                    captureStartTime = 0L
-                    runOnUiThread {
-                        updateInstruction()
-                    }
-                } else {
-                    Log.v(TAG, "ImageAnalyzer: Skipping analysis - capture in progress for ${scanningStep.name} (${captureElapsed}ms elapsed)")
-                    imageProxy.close()
-                    return
-                }
             }
             
             // Add throttling to prevent excessive processing
@@ -746,8 +726,7 @@ class EmiratesIdScannerActivity : AppCompatActivity() {
         }
         
         isCapturing = true
-        captureStartTime = System.currentTimeMillis()  // Track when capture started
-        Log.d(TAG, "Set isCapturing = true for ${scanningStep.name} side (started at $captureStartTime)")
+        Log.d(TAG, "Set isCapturing = true for ${scanningStep.name} side")
         
         // Add timeout to reset isCapturing flag in case capture gets stuck
         lifecycleScope.launch {
@@ -755,7 +734,6 @@ class EmiratesIdScannerActivity : AppCompatActivity() {
             if (isCapturing) {
                 Log.w(TAG, "Capture timeout reached, resetting isCapturing flag")
                 isCapturing = false
-                captureStartTime = 0L
                 runOnUiThread {
                     instructionText.text = "حدث خطأ في التصوير، يرجى المحاولة مرة أخرى"
                 }
@@ -771,24 +749,15 @@ class EmiratesIdScannerActivity : AppCompatActivity() {
         val imageCapture = imageCapture ?: run {
             Log.e(TAG, "ImageCapture is null, cannot capture image")
             isCapturing = false
-            captureStartTime = 0L
             return
         }
         
-        // Ensure camera is still bound and active
+        // Ensure camera is still bound
         if (camera == null) {
             Log.e(TAG, "Camera is null, attempting to restart")
             isCapturing = false
             startCamera()
             return
-        }
-
-        // Check camera state 
-        val cameraInfo = camera?.cameraInfo
-        Log.d(TAG, "Camera state - available: ${cameraInfo != null}")
-        if (cameraInfo != null) {
-            Log.d(TAG, "Camera implementation type: ${cameraInfo.implementationType}")
-            Log.d(TAG, "Camera sensor rotation: ${cameraInfo.sensorRotationDegrees}")
         }
         
         Log.d(TAG, "ImageCapture and Camera are ready, proceeding with capture")
@@ -811,69 +780,49 @@ class EmiratesIdScannerActivity : AppCompatActivity() {
         val outputFileOptions = ImageCapture.OutputFileOptions.Builder(tempFile).build()
         
         Log.d(TAG, "Starting image capture for step: $scanningStep")
-        Log.d(TAG, "ImageCapture object: $imageCapture")
-        Log.d(TAG, "Output file: ${tempFile.absolutePath}")
         
-        // Set up a fallback timeout to prevent permanent hang
-        val captureTimeoutJob = lifecycleScope.launch {
-            delay(10000) // 10 second timeout for capture
-            if (isCapturing) {
-                Log.w(TAG, "Capture callback timeout - forcing reset")
-                runOnUiThread {
-                    isCapturing = false
-                    instructionText.text = "حدث خطأ في التصوير، يرجى المحاولة مرة أخرى"
-                    lifecycleScope.launch {
-                        delay(3000)
-                        runOnUiThread {
-                            updateInstruction()
-                        }
-                    }
-                }
-            }
-        }
-        
-        // Use MainExecutor for callback to ensure proper UI thread handling
+        // Use the dedicated cameraExecutor for capture operations to ensure proper thread handling
         imageCapture.takePicture(
             outputFileOptions,
-            ContextCompat.getMainExecutor(this),  // Use MainExecutor for more reliable callbacks
+            cameraExecutor,  // Use cameraExecutor instead of MainExecutor for better reliability
             object : ImageCapture.OnImageSavedCallback {
                 override fun onError(exception: ImageCaptureException) {
                     Log.e(TAG, "Image capture failed for ${scanningStep.name}: ${exception.message}", exception)
                     Log.e(TAG, "ImageCaptureException details - error code: ${exception.imageCaptureError}")
                     
-                    captureTimeoutJob.cancel() // Cancel timeout since we got a callback
-                    isCapturing = false  // Reset capture state on error
-                    finishWithError("Failed to capture image: ${exception.message}")
+                    // Use runOnUiThread to ensure UI updates happen on main thread
+                    runOnUiThread {
+                        isCapturing = false  // Reset capture state on error
+                        finishWithError("Failed to capture image: ${exception.message}")
+                    }
                 }
                 
                 override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                    Log.d(TAG, "★★★ onImageSaved callback TRIGGERED for ${scanningStep.name} side ★★★")
+                    Log.d(TAG, "onImageSaved callback triggered for ${scanningStep.name} side")
                     Log.d(TAG, "Image saved successfully, output URI: ${output.savedUri}")
-                    Log.d(TAG, "Temp file exists: ${tempFile.exists()}, size: ${if (tempFile.exists()) tempFile.length() else "N/A"}")
                     
-                    captureTimeoutJob.cancel() // Cancel timeout since we got the callback
-                    
-                    try {
-                        // Double-check we're still in the expected scanning step
-                        if (scanningStep == ScanningStep.COMPLETED) {
-                            Log.d(TAG, "Image captured but scanning already completed, cleaning up")
-                            tempFile.delete()
+                    // Ensure UI operations happen on main thread
+                    runOnUiThread {
+                        try {
+                            // Double-check we're still in the expected scanning step
+                            if (scanningStep == ScanningStep.COMPLETED) {
+                                Log.d(TAG, "Image captured but scanning already completed, cleaning up")
+                                tempFile.delete()
+                                isCapturing = false
+                                return@runOnUiThread
+                            }
+                            
+                            Log.d(TAG, "Processing captured image for ${scanningStep.name} side")
+                            processCompletedCapture(tempFile, finalFile)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error in onImageSaved processing: ${e.message}", e)
                             isCapturing = false
-                            return
+                            finishWithError("Error processing captured image: ${e.message}")
                         }
-                        
-                        Log.d(TAG, "Processing captured image for ${scanningStep.name} side")
-                        processCompletedCapture(tempFile, finalFile)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error in onImageSaved processing: ${e.message}", e)
-                        isCapturing = false
-                        finishWithError("Error processing captured image: ${e.message}")
                     }
                 }
             }
         )
-        
-        Log.d(TAG, "takePicture() call completed, waiting for callback...")
     }
     
     private fun processCompletedCapture(tempFile: File, finalFile: File) {
@@ -965,25 +914,22 @@ class EmiratesIdScannerActivity : AppCompatActivity() {
                         
                         frontImagePath = finalFile.absolutePath
                         frontSideContent = frontText
+                        scanningStep = ScanningStep.BACK
                         
-                        // Show completion message for front side BEFORE transitioning
+                        // Show completion message for front side
                         runOnUiThread {
                             instructionText.text = "تم مسح الوجه الأمامي بنجاح. الآن قم بمسح الوجه الخلفي للهوية"
                         }
                         
-                        Log.d(TAG, "Front side processed successfully, transitioning to back side scanning")
-                        
-                        // CRITICAL: Reset isCapturing IMMEDIATELY after success message to prevent infinite loop
+                        // CRITICAL: Reset isCapturing before transitioning to back side
+                        Log.d(TAG, "Front side processed successfully, resetting isCapturing for back side scanning")
                         isCapturing = false
-                        captureStartTime = 0L
-                        Log.d(TAG, "isCapturing flag reset to false after front side completion")
                         
-                        // Transition to back side with improved error handling
-                        transitionToBackSideScanning()
+                        // Restart camera for back side scanning with improved resource management
+                        restartCameraForNextStep()
                     } catch (e: Exception) {
                         Log.e(TAG, "Error processing front side: ${e.message}", e)
                         isCapturing = false
-                        captureStartTime = 0L
                         runOnUiThread {
                             finishWithError("Error processing front side: ${e.message}")
                         }
@@ -1047,7 +993,7 @@ class EmiratesIdScannerActivity : AppCompatActivity() {
                         
                         // Finish scanning with successful result
                         runOnUiThread {
-                            finishWithResult(RESULT_SUCCESS, mapOf(
+                            finishWithResult(RESULT_OK, mapOf(
                                 "frontImagePath" to frontImagePath,
                                 "backImagePath" to backImagePath
                             ))
@@ -1069,8 +1015,54 @@ class EmiratesIdScannerActivity : AppCompatActivity() {
         
         // Clean up temp file
         tempFile.delete()
+                            }
+                        }
+                        ScanningStep.BACK -> {
+                            // Check if this is actually the same side as the front (duplicate scan)
+                            if (isDuplicateCardSide(backText, isFrontSide = false)) {
+                                Log.w(TAG, "This appears to be a duplicate of the front side")
+                                runOnUiThread {
+                                    instructionText.text = "هذه نفس الواجهة الأمامية، يرجى مسح الوجه الخلفي للبطاقة"
+                                }
+                                // Delete the invalid image
+                                finalFile.delete()
+                                // Reset instruction after delay
+                                lifecycleScope.launch {
+                                    delay(3000)
+                                    runOnUiThread {
+                                        updateInstruction()
+                                    }
+                                }
+                                isCapturing = false  // Reset capture state
+                                return
+                            }
+                            
+                            // We've now confirmed this is a valid back side, store it
+                            backImagePath = finalFile.absolutePath
+                            backSideContent = backText
+                            scanningStep = ScanningStep.COMPLETED
+                            
+                            // Show completion message for back side
+                            runOnUiThread {
+                                instructionText.text = "تم مسح الوجه الخلفي بنجاح. جاري معالجة البيانات..."
+                            }
+                            
+                            // Delay before processing
+                            lifecycleScope.launch {
+                                delay(1500)
+                                processCompleted()
+                            }
+                        }
+                        ScanningStep.COMPLETED -> return
+                    }
+                    
+                    // Clean up temp file
+                    tempFile.delete()
+                }
+            }
+        )
     }
-
+    
     private fun processCompleted() {
         lifecycleScope.launch {
             try {
@@ -1284,7 +1276,6 @@ class EmiratesIdScannerActivity : AppCompatActivity() {
         camera = null
         imageCapture = null
         isCapturing = false
-        captureStartTime = 0L
     }
     
     override fun onResume() {
@@ -1327,13 +1318,12 @@ class EmiratesIdScannerActivity : AppCompatActivity() {
     private fun restartCameraForNextStep() {
         lifecycleScope.launch {
             try {
-                Log.d(TAG, "=== Starting camera restart for ${scanningStep.name} side ===")
+                Log.d(TAG, "Restarting camera for next scanning step: ${scanningStep.name}")
                 Log.d(TAG, "Current isCapturing state before restart: $isCapturing")
                 
                 // First, completely stop the camera and clear ImageAnalysis
                 val cameraProvider = ProcessCameraProvider.getInstance(this@EmiratesIdScannerActivity).get()
                 cameraProvider.unbindAll()
-                Log.d(TAG, "Camera provider unbound all use cases")
                 
                 // Clear camera references and reset capture state
                 camera = null
@@ -1341,73 +1331,38 @@ class EmiratesIdScannerActivity : AppCompatActivity() {
                 imageAnalyzer?.clearAnalyzer()  // Clear the analyzer to stop processing
                 imageAnalyzer = null
                 isCapturing = false  // Reset capture state for next step
-                captureStartTime = 0L
                 Log.d(TAG, "Camera resources cleared and isCapturing reset to false")
                 
                 // Wait a bit to ensure resources are fully released
-                delay(1000) // Increased delay for better resource cleanup
+                delay(750)
                 
                 // Update UI first
                 runOnUiThread {
                     updateInstruction()
-                    Log.d(TAG, "Instruction updated for ${scanningStep.name} side")
                 }
                 
                 // Small additional delay for UI update
-                delay(500)
+                delay(250)
                 
                 // Restart camera
                 runOnUiThread {
                     if (scanningStep != ScanningStep.COMPLETED) {
-                        Log.d(TAG, "About to restart camera for ${scanningStep.name} side")
                         startCamera()
-                        Log.d(TAG, "=== Camera restarted successfully for ${scanningStep.name} side ===")
-                    } else {
-                        Log.d(TAG, "Skipping camera restart - scanning completed")
+                        Log.d(TAG, "Camera restarted successfully for ${scanningStep.name} side")
                     }
                 }
                 
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to restart camera: ${e.message}", e)
+                Log.e(TAG, "Failed to restart camera: ${e.message}")
                 
-                // Enhanced fallback recovery
+                // Fallback: try a simpler restart after a longer delay
                 try {
-                    Log.w(TAG, "Attempting fallback camera restart...")
-                    delay(2000) // Longer delay for fallback
-                    
+                    delay(1500)
                     runOnUiThread {
                         if (scanningStep != ScanningStep.COMPLETED) {
                             isCapturing = false  // Ensure state is reset
-                            
-                            try {
-                                startCamera()
-                                Log.d(TAG, "Camera restarted with fallback method")
-                                
-                                // Show success message to user
-                                when (scanningStep) {
-                                    ScanningStep.FRONT -> instructionText.text = "قُم بمسح الوجه الأمامي للهوية"
-                                    ScanningStep.BACK -> instructionText.text = "قُم بمسح الوجه الخلفي للهوية"
-                                    ScanningStep.COMPLETED -> return@runOnUiThread
-                                }
-                                
-                            } catch (e2: Exception) {
-                                Log.e(TAG, "Fallback camera restart also failed: ${e2.message}")
-                                instructionText.text = "خطأ في إعادة تشغيل الكاميرا. يرجى إعادة المحاولة"
-                                isCapturing = false
-                                
-                                // Final attempt after user sees error message
-                                lifecycleScope.launch {
-                                    delay(3000)
-                                    try {
-                                        startCamera()
-                                        updateInstruction()
-                                        Log.d(TAG, "Final camera restart attempt succeeded")
-                                    } catch (e3: Exception) {
-                                        Log.e(TAG, "All camera restart attempts failed")
-                                        finishWithError("Failed to restart camera for ${scanningStep.name} side: ${e3.message}")
-                                    }
-                                }
-                            }
+                            startCamera()
+                            Log.d(TAG, "Camera restarted with fallback method")
                         }
                     }
                 } catch (e2: Exception) {
@@ -1416,51 +1371,6 @@ class EmiratesIdScannerActivity : AppCompatActivity() {
                     runOnUiThread {
                         instructionText.text = "خطأ في إعادة تشغيل الكاميرا. يرجى إعادة المحاولة"
                         isCapturing = false  // Reset state even on error
-                    }
-                }
-            }
-        }
-    }
-    
-    private fun transitionToBackSideScanning() {
-        lifecycleScope.launch {
-            try {
-                Log.d(TAG, "Starting transition from FRONT to BACK side scanning")
-                
-                // Step 1: Wait for UI message to be visible
-                delay(2000) // Give user time to read the success message
-                
-                // Step 2: Set the scanning step to BACK
-                scanningStep = ScanningStep.BACK
-                Log.d(TAG, "Scanning step changed to: ${scanningStep.name}")
-                
-                // Step 3: Update instruction text to back side
-                runOnUiThread {
-                    updateInstruction()
-                    Log.d(TAG, "UI updated for back side scanning")
-                }
-                
-                // Step 4: Wait a bit more for UI update
-                delay(500)
-                
-                // Step 5: Restart camera for back side with proper error handling
-                restartCameraForNextStep()
-                
-            } catch (e: Exception) {
-                Log.e(TAG, "Error during transition to back side: ${e.message}", e)
-                runOnUiThread {
-                    instructionText.text = "خطأ في الانتقال إلى المسح الخلفي. يرجى إعادة المحاولة"
-                    isCapturing = false
-                    // Try to restart anyway after a delay
-                    lifecycleScope.launch {
-                        delay(3000)
-                        try {
-                            scanningStep = ScanningStep.BACK
-                            restartCameraForNextStep()
-                        } catch (e2: Exception) {
-                            Log.e(TAG, "Failed to recover from transition error: ${e2.message}")
-                            finishWithError("Failed to transition to back side scanning: ${e2.message}")
-                        }
                     }
                 }
             }

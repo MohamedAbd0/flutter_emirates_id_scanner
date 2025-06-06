@@ -15,13 +15,23 @@ A Flutter plugin for scanning Emirates ID cards with native camera and OCR capab
 
 The plugin extracts the following information from Emirates ID cards:
 
+### Front Side Data
+
 - **Full Name**
-- **ID Number** (XXX-XXXX-XXXXXXX-X format)
+- **ID Number** (784-YYYY-XXXXXXX-X format)
 - **Nationality**
 - **Date of Birth**
 - **Issue Date**
 - **Expiry Date**
 - **Front Image Path**
+
+### Back Side Data
+
+- **Card Number**
+- **Occupation**
+- **Employer**
+- **Issuing Place** (Abu Dhabi, Dubai, etc.)
+- **MRZ Data** (Machine Readable Zone)
 - **Back Image Path**
 
 ## Installation
@@ -80,7 +90,15 @@ class _MyAppState extends State<MyApp> {
         print('Name: ${result.fullName}');
         print('ID: ${result.idNumber}');
         print('Nationality: ${result.nationality}');
-        // Access other fields...
+        print('Date of Birth: ${result.dateOfBirth}');
+        print('Issue Date: ${result.issueDate}');
+        print('Expiry Date: ${result.expiryDate}');
+
+        // Back side data
+        print('Card Number: ${result.cardNumber}');
+        print('Occupation: ${result.occupation}');
+        print('Employer: ${result.employer}');
+        print('Issuing Place: ${result.issuingPlace}');
       }
     } on PlatformException catch (e) {
       print('Error: ${e.message}');
@@ -102,7 +120,11 @@ class _MyAppState extends State<MyApp> {
               Text('Name: ${_result!.fullName ?? "N/A"}'),
               Text('ID: ${_result!.idNumber ?? "N/A"}'),
               Text('Nationality: ${_result!.nationality ?? "N/A"}'),
-              // Display other fields...
+              Text('Date of Birth: ${_result!.dateOfBirth ?? "N/A"}'),
+              Text('Card Number: ${_result!.cardNumber ?? "N/A"}'),
+              Text('Occupation: ${_result!.occupation ?? "N/A"}'),
+              Text('Issuing Place: ${_result!.issuingPlace ?? "N/A"}'),
+              // More fields available...
             ],
           ],
         ),
@@ -146,9 +168,33 @@ Future<void> _scanWithErrorHandling() async {
 }
 ```
 
-## Scanning Flow
+## Enhanced Validation & Scanning Flow
 
-The plugin follows a guided scanning process:
+The plugin uses advanced validation to accurately identify Emirates ID cards:
+
+### Front Side Validation
+
+- **UAE-Specific ID Pattern**: Validates the specific format `784-YYYY-XXXXXXX-X` where 784 is the UAE country code
+- **Multiple Indicators**: Checks for combinations of header text, nationality, dates, and card text
+- **Bilingual Detection**: Recognizes both English and Arabic text on the card
+- **Smart Pattern Matching**: Uses regex to identify dates and ID numbers in standard formats
+
+### Back Side Validation
+
+- **Card Number**: Detects the card number field specific to the back side
+- **Professional Info**: Validates based on occupation and employer fields
+- **Issuing Place**: Recognizes emirate names like Abu Dhabi, Dubai, etc.
+- **MRZ Pattern**: Detects the machine readable zone with characteristic '<' separators
+- **Security Features**: Recognizes security notices and official text
+
+### Duplicate Detection
+
+- **Content-Based Validation**: Analyzes the extracted text to prevent scanning the same side twice
+- **Pattern Matching**: Detects common elements between front and back to identify duplicates
+- **ID Number Comparison**: Uses the Emirates ID number pattern to verify unique sides
+- **Warning Messages**: Shows clear Arabic guidance when duplicates are detected
+
+### Scanning Flow
 
 1. **Front Side Scanning**
 

@@ -12,20 +12,25 @@ void main() {
   setUp(() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
-          if (methodCall.method == 'scanEmiratesId') {
-            return {
-              'fullName': 'John Doe',
-              'idNumber': '123-4567-1234567-1',
-              'nationality': 'UAE',
-              'dateOfBirth': '01/01/1990',
-              'issueDate': '01/01/2020',
-              'expiryDate': '01/01/2030',
-              'frontImagePath': '/path/to/front.jpg',
-              'backImagePath': '/path/to/back.jpg',
-            };
-          }
-          return null;
-        });
+      if (methodCall.method == 'scanEmiratesId') {
+        return {
+          'fullName': 'Mohamed Abdou',
+          'idNumber': '784-1911-1111111-1',
+          'nationality': 'Egypt',
+          'dateOfBirth': '11/11/1911',
+          'issueDate': '11/12/2023',
+          'expiryDate': '11/12/2025',
+          'frontImagePath': '/path/to/front.jpg',
+          'backImagePath': '/path/to/back.jpg',
+          'cardNumber': '130000000',
+          'occupation': 'Software Developer',
+          'employer': 'Dscale',
+          'issuingPlace': 'Abu Dhabi',
+          'mrzData': '000000000000<<<<<<<<<<1\n<<MOHAMED<ABDOU',
+        };
+      }
+      return null;
+    });
   });
 
   tearDown(() {
@@ -35,7 +40,10 @@ void main() {
 
   test('scanEmiratesId', () async {
     final result = await platform.scanEmiratesId();
-    expect(result?.fullName, 'John Doe');
-    expect(result?.idNumber, '123-4567-1234567-1');
+    expect(result?.fullName, 'Mohamed Abdou');
+    expect(result?.idNumber, '784-1911-1111111-1');
+    expect(result?.cardNumber, '130000000');
+    expect(result?.occupation, 'Software Developer');
+    expect(result?.issuingPlace, 'Abu Dhabi');
   });
 }

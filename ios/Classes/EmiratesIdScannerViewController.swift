@@ -1,7 +1,7 @@
 import UIKit
-import AVFoundation
+import Foundation
 import Vision
-import CryptoKit
+import AVFoundation
 
 class EmiratesIdScannerViewController: UIViewController {
     
@@ -17,8 +17,8 @@ class EmiratesIdScannerViewController: UIViewController {
     private var scanningStep: ScanningStep = .front
     private var frontImagePath: String?
     private var backImagePath: String?
-    private var frontImageHash: String?
-    private var backImageHash: String?
+    private var frontSideContent: String?
+    private var backSideContent: String?
     private var extractedData: [String: String?] = [:]
     
     // Rectangle bounds for cropping
@@ -39,6 +39,7 @@ class EmiratesIdScannerViewController: UIViewController {
     
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        // Start or restart the capture session when view appears
         if captureSession?.isRunning == false {
             DispatchQueue.global(qos: .userInitiated).async {
                 self.captureSession.startRunning()
@@ -48,8 +49,66 @@ class EmiratesIdScannerViewController: UIViewController {
     
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        // Stop the capture session when view is about to disappear
         if captureSession?.isRunning == true {
             captureSession.stopRunning()
+        }
+    }
+    
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        // Clean up additional resources if needed
+        if captureSession?.isRunning == true {
+            captureSession.stopRunning()
+        }
+    }
+    
+    // MARK: - Camera Session Management
+    
+    private func restartCameraSession() {
+        // Stop the current capture session
+        if captureSession?.isRunning == true {
+            captureSession.stopRunning()
+        }
+        
+        // Clean up resources
+        if let inputs = captureSession?.inputs {
+            for input in inputs {
+                captureSession.removeInput(input)
+            }
+        }
+        
+        if let outputs = captureSession?.outputs {
+            for output in outputs {
+                captureSession.removeOutput(output)
+            }
+        }
+        
+        // Re-setup the camera inputs and outputs
+        setupCameraInputsAndOutputs()
+        
+        // Restart the session
+        DispatchQueue.global(qos: .userInitiated).async {
+            self.captureSession.startRunning()
+        }
+    }
+    
+    private func setupCameraInputsAndOutputs() {
+        guard let backCamera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else {
+            handleError("Unable to access back camera")
+            return
+        }
+        
+        do {
+            let input = try AVCaptureDeviceInput(device: backCamera)
+            capturePhotoOutput = AVCapturePhotoOutput()
+            
+            if captureSession.canAddInput(input) && captureSession.canAddOutput(capturePhotoOutput) {
+                captureSession.addInput(input)
+                captureSession.addOutput(capturePhotoOutput)
+            }
+        } catch {
+            handleError("Error setting up camera: \(error.localizedDescription)")
         }
     }
     
@@ -165,28 +224,8 @@ class EmiratesIdScannerViewController: UIViewController {
         captureSession = AVCaptureSession()
         captureSession.sessionPreset = .photo
         
-        guard let backCamera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else {
-            handleError("Unable to access back camera")
-            return
-        }
+        setupCameraInputsAndOutputs()
         
-        do {
-            let input = try AVCaptureDeviceInput(device: backCamera)
-            capturePhotoOutput = AVCapturePhotoOutput()
-            
-            if captureSession.canAddInput(input) && captureSession.canAddOutput(capturePhotoOutput) {
-                captureSession.addInput(input)
-                captureSession.addOutput(capturePhotoOutput)
-                
-                setupLivePreview()
-                setupVideoOutput()
-            }
-        } catch {
-            handleError("Error setting up camera: \(error.localizedDescription)")
-        }
-    }
-    
-    private func setupLivePreview() {
         videoPreviewLayer = AVCaptureVideoPreviewLayer(session: captureSession)
         videoPreviewLayer.videoGravity = .resizeAspectFill
         videoPreviewLayer.connection?.videoOrientation = .portrait
@@ -200,6 +239,8 @@ class EmiratesIdScannerViewController: UIViewController {
                 self.videoPreviewLayer.frame = self.view.bounds
             }
         }
+        
+        setupVideoOutput()
     }
     
     private func setupVideoOutput() {
@@ -235,25 +276,6 @@ class EmiratesIdScannerViewController: UIViewController {
     }
     
     // MARK: - Image Processing Helpers
-    private func calculateImageHash(_ imagePath: String) -> String {
-        guard let imageData = FileManager.default.contents(atPath: imagePath) else {
-            return ""
-        }
-        
-        if #available(iOS 13.0, *) {
-            let digest = Insecure.MD5.hash(data: imageData)
-            return digest.map { String(format: "%02hhx", $0) }.joined()
-        } else {
-            // Fallback for iOS < 13
-            return imageData.base64EncodedString()
-        }
-    }
-    
-    private func areImagesSimilar(_ hash1: String?, _ hash2: String?) -> Bool {
-        guard let hash1 = hash1, let hash2 = hash2 else { return false }
-        return hash1 == hash2
-    }
-    
     private func cropImageToRectangle(originalPath: String, outputPath: String) -> Bool {
         guard let originalImage = UIImage(contentsOfFile: originalPath) else {
             print("Failed to load image from: \(originalPath)")
@@ -366,7 +388,12 @@ class EmiratesIdScannerViewController: UIViewController {
                     "issueDate": extractedData["issueDate"] ?? nil,
                     "expiryDate": extractedData["expiryDate"] ?? nil,
                     "frontImagePath": frontImagePath,
-                    "backImagePath": backImagePath
+                    "backImagePath": backImagePath,
+                    "cardNumber": extractedData["cardNumber"] ?? nil,
+                    "occupation": extractedData["occupation"] ?? nil,
+                    "employer": extractedData["employer"] ?? nil,
+                    "issuingPlace": extractedData["issuingPlace"] ?? nil,
+                    "mrzData": extractedData["mrzData"] ?? nil
                 ]
                 
                 DispatchQueue.main.async {
@@ -385,6 +412,106 @@ class EmiratesIdScannerViewController: UIViewController {
         let error = NSError(domain: "EmiratesIdScanner", code: 2, userInfo: [NSLocalizedDescriptionKey: message])
         onScanComplete?(.failure(error))
         dismiss(animated: true)
+    }
+    
+    /**
+     * Checks if the current scanned side is a duplicate of a previously scanned side
+     * based on text content comparison instead of image hash
+     */
+    private func isDuplicateCardSide(_ newText: String, isFrontSide: Bool) -> Bool {
+        // Clean the text for better comparison
+        let cleanedText = newText.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).uppercased()
+        
+        if isFrontSide {
+            // Check if this front side text is similar to already scanned back side content
+            if let backText = backSideContent {
+                // Content similarity check
+                return hasSimilarContent(cleanedText, backText)
+            }
+        } else {
+            // Check if this back side text is similar to already scanned front side content
+            if let frontText = frontSideContent {
+                return hasSimilarContent(cleanedText, frontText)
+            }
+        }
+        
+        return false
+    }
+    
+    /**
+     * Compares two text contents to determine if they likely represent the same side of a card
+     * This uses multiple criteria to make the decision more robust
+     */
+    private func hasSimilarContent(_ text1: String, _ text2: String) -> Bool {
+        // --- SPECIFIC ID NUMBER CHECK ---
+        // If both texts contain the same ID number pattern, they are likely the same
+        let idPattern = try? NSRegularExpression(pattern: "784-\\d{4}-\\d{7}-\\d{1}")
+        let range1 = NSRange(location: 0, length: text1.utf16.count)
+        let range2 = NSRange(location: 0, length: text2.utf16.count)
+        
+        let idMatches1 = idPattern?.matches(in: text1, options: [], range: range1).map {
+            String(text1[Range($0.range, in: text1)!])
+        } ?? []
+        
+        let idMatches2 = idPattern?.matches(in: text2, options: [], range: range2).map {
+            String(text2[Range($0.range, in: text2)!])
+        } ?? []
+        
+        // If both sides have the same ID number, they are definitely the same side
+        if !idMatches1.isEmpty && !idMatches2.isEmpty && idMatches1.contains(where: { idMatches2.contains($0) }) {
+            print("Same ID number found on both scans")
+            return true
+        }
+        
+        // --- FRONT SIDE SPECIFIC CHECK ---
+        // Check for key phrases that should appear only on front side
+        let frontSideKeywords = [
+            "UNITED ARAB EMIRATES", "الإمارات العربية المتحدة", "FEDERAL AUTHORITY",
+            "IDENTITY CARD", "بطاقة هوية", "RESIDENT IDENTITY CARD"
+        ]
+        
+        var frontSideMatches1 = 0
+        var frontSideMatches2 = 0
+        
+        for keyword in frontSideKeywords {
+            if text1.contains(keyword) { frontSideMatches1 += 1 }
+            if text2.contains(keyword) { frontSideMatches2 += 1 }
+        }
+        
+        // If both texts have multiple front side indicators, they are likely both front sides
+        let isBothFront = frontSideMatches1 >= 2 && frontSideMatches2 >= 2
+        
+        // --- BACK SIDE SPECIFIC CHECK ---
+        // Check for key phrases that should appear only on back side
+        let backSideKeywords = [
+            "CARD NUMBER", "رقم البطاقة", "OCCUPATION", "المهنة",
+            "EMPLOYER", "صاحب العمل", "ISSUING PLACE", "مكان الإصدار"
+        ]
+        
+        var backSideMatches1 = 0
+        var backSideMatches2 = 0
+        
+        for keyword in backSideKeywords {
+            if text1.contains(keyword) { backSideMatches1 += 1 }
+            if text2.contains(keyword) { backSideMatches2 += 1 }
+        }
+        
+        // Check for MRZ pattern which is specific to back side
+        let hasMrzPattern1 = text1.contains("<<<<<<") || text1.filter { $0 == "<" }.count > 5
+        let hasMrzPattern2 = text2.contains("<<<<<<") || text2.filter { $0 == "<" }.count > 5
+        
+        if hasMrzPattern1 { backSideMatches1 += 1 }
+        if hasMrzPattern2 { backSideMatches2 += 1 }
+        
+        // If both texts have multiple back side indicators, they are likely both back sides
+        let isBothBack = backSideMatches1 >= 2 && backSideMatches2 >= 2
+        
+        // Log result for debugging
+        if isBothFront || isBothBack {
+            print("Duplicate side detected: isBothFront=\(isBothFront), isBothBack=\(isBothBack)")
+        }
+        
+        return isBothFront || isBothBack
     }
 }
 
@@ -435,20 +562,69 @@ extension EmiratesIdScannerViewController: AVCaptureVideoDataOutputSampleBufferD
     
     private func isValidFrontSide(_ text: String) -> Bool {
         let cleanText = text.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).uppercased()
-        return cleanText.contains("EMIRATES") ||
-               cleanText.contains("الإمارات") ||
-               cleanText.contains("IDENTITY") ||
-               cleanText.contains("CARD") ||
-               text.range(of: "\\d{3}-\\d{4}-\\d{7}-\\d{1}", options: .regularExpression) != nil
+        
+        // Check for ID number with pattern 784-YYYY-XXXXXXX-X (where 784 is UAE country code)
+        let hasIdNumber = text.range(of: "784-\\d{4}-\\d{7}-\\d{1}", options: .regularExpression) != nil
+        
+        // Check for key header text
+        let hasHeaderText = cleanText.contains("UNITED ARAB EMIRATES") || 
+                          cleanText.contains("الإمارات العربية المتحدة") ||
+                          cleanText.contains("FEDERAL AUTHORITY")
+        
+        // Check for nationality field
+        let hasNationality = cleanText.contains("NATIONALITY") || cleanText.contains("الجنسية")
+        
+        // Check for date patterns (DD/MM/YYYY)
+        let hasDateFormat = text.range(of: "\\d{2}/\\d{2}/\\d{4}", options: .regularExpression) != nil
+        
+        // ID Card specific fields
+        let hasCardText = cleanText.contains("IDENTITY CARD") || 
+                        cleanText.contains("بطاقة هوية") || 
+                        cleanText.contains("RESIDENT IDENTITY CARD")
+        
+        // Return true if we have at least two strong indicators
+        return (hasIdNumber || (hasHeaderText && (hasDateFormat || hasNationality || hasCardText)))
     }
     
     private func isValidBackSide(_ text: String) -> Bool {
         let cleanText = text.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression).uppercased()
-        return cleanText.contains("MINISTRY") ||
-               cleanText.contains("INTERIOR") ||
-               cleanText.contains("وزارة") ||
-               cleanText.contains("الداخلية") ||
-               text.range(of: "\\d{2}/\\d{2}/\\d{4}", options: .regularExpression) != nil
+        
+        // Check for Card Number label which is specific to the back side
+        let hasCardNumber = cleanText.contains("CARD NUMBER") || cleanText.contains("رقم البطاقة")
+        
+        // Check for occupation field which appears on back side
+        let hasOccupation = cleanText.contains("OCCUPATION") || cleanText.contains("المهنة")
+        
+        // Check for employer field which appears on back side
+        let hasEmployer = cleanText.contains("EMPLOYER") || cleanText.contains("صاحب العمل")
+        
+        // Check for issuing place field which appears on back side
+        let hasIssuingPlace = cleanText.contains("ISSUING PLACE") || cleanText.contains("مكان الإصدار")
+        
+        // Check for specific places like Abu Dhabi, Dubai, etc.
+        let hasEmirateLocation = cleanText.contains("ABU DHABI") || 
+                               cleanText.contains("DUBAI") || 
+                               cleanText.contains("SHARJAH") || 
+                               cleanText.contains("أبوظبي") || 
+                               cleanText.contains("دبي") || 
+                               cleanText.contains("الشارقة")
+        
+        // Check for the machine readable zone (MRZ) pattern with multiple '<' characters 
+        let hasMrzPattern = cleanText.contains("<<<<<<") || text.filter { $0 == "<" }.count > 5
+        
+        // Check for electronic chip references
+        let hasChipInfo = cleanText.contains("CHIP") || 
+                        text.range(of: "\\d{8,}", options: .regularExpression) != nil // Long numerical sequences for chip ID
+        
+        // Check for characteristic notice text on the back
+        let hasNotice = cleanText.contains("PLEASE RETURN") || 
+                      cleanText.contains("POLICE STATION") ||
+                      cleanText.contains("الرجاء إعادة") ||
+                      cleanText.contains("مركز شرطة")
+        
+        // Return true if we have at least two strong indicators of back side
+        return ((hasCardNumber || hasOccupation || hasEmployer || hasIssuingPlace) && 
+                (hasMrzPattern || hasChipInfo || hasEmirateLocation || hasNotice))
     }
 }
 
@@ -508,53 +684,137 @@ extension EmiratesIdScannerViewController: AVCapturePhotoCaptureDelegate {
                 return
             }
             
-            // Calculate hash for duplicate detection
-            let imageHash = calculateImageHash(finalImagePath.path)
-            
             switch scanningStep {
             case .front:
-                frontImagePath = finalImagePath.path
-                frontImageHash = imageHash
-                scanningStep = .back
-                
-                // Show completion message for front side
-                DispatchQueue.main.async {
-                    self.instructionLabel.text = "تم مسح الوجه الأمامي بنجاح. الآن قم بمسح الوجه الخلفي للهوية"
-                }
-                
-                // Delay before showing back instruction
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                    self.updateInstruction()
+                // Extract text from image to check for front side indicators
+                Task {
+                    do {
+                        let frontText = try await extractTextFromImage(at: finalImagePath.path)
+                        let isFrontSide = isValidFrontSide(frontText)
+                        
+                        if !isFrontSide {
+                            // This doesn't look like a front side
+                            print("Image doesn't appear to be front side of Emirates ID")
+                            // Show error message and stay on front scanning
+                            DispatchQueue.main.async {
+                                self.instructionLabel.text = "هذه ليست الواجهة الأمامية للبطاقة، يرجى مسح الوجه الأمامي"
+                                
+                                // Reset instruction after delay
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                                    self.updateInstruction()
+                                }
+                            }
+                            // Delete the invalid image
+                            try? FileManager.default.removeItem(at: finalImagePath)
+                            return
+                        }
+                        
+                        // Check if the front side is a duplicate of the back (in case user scanned back first)
+                        if backSideContent != nil && isDuplicateCardSide(frontText, isFrontSide: true) {
+                            print("This appears to be a duplicate of the back side")
+                            DispatchQueue.main.async {
+                                self.instructionLabel.text = "هذه نفس الواجهة الخلفية، يرجى مسح الوجه الأمامي للبطاقة"
+                                
+                                // Reset instruction after delay
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                                    self.updateInstruction()
+                                }
+                            }
+                            // Delete the invalid image
+                            try? FileManager.default.removeItem(at: finalImagePath)
+                            return
+                        }
+                        
+                        // Valid front side - continue
+                        self.frontImagePath = finalImagePath.path
+                        self.frontSideContent = frontText
+                        self.scanningStep = .back
+                        
+                        // Show completion message for front side
+                        DispatchQueue.main.async {
+                            self.instructionLabel.text = "تم مسح الوجه الأمامي بنجاح. الآن قم بمسح الوجه الخلفي للهوية"
+                            
+                            // Restart the camera session to prevent resource issues
+                            self.restartCameraSession()
+                            
+                            // Delay before showing back instruction
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                                self.updateInstruction()
+                            }
+                        }
+                    } catch {
+                        print("Error processing front image: \(error)")
+                        DispatchQueue.main.async {
+                            self.handleError("Failed to process image")
+                        }
+                    }
                 }
             case .back:
-                // Check if back image is different from front
-                if areImagesSimilar(frontImageHash, imageHash) {
-                    print("Back image is similar to front image")
-                    // Show error message and stay on back scanning
-                    DispatchQueue.main.async {
-                        self.instructionLabel.text = "الصورة مشابهة للوجه الأمامي، قم بمسح الوجه الخلفي"
+                // Extract text from image to check for back side indicators
+                Task {
+                    do {
+                        let backText = try await extractTextFromImage(at: finalImagePath.path)
+                        
+                        // First check if this is actually a back side
+                        let isBackSide = self.isValidBackSide(backText)
+                        if !isBackSide {
+                            // This doesn't look like a back side
+                            print("Image doesn't appear to be back side of Emirates ID")
+                            // Show error message and stay on back scanning
+                            DispatchQueue.main.async {
+                                self.instructionLabel.text = "هذه ليست الواجهة الخلفية للبطاقة، يرجى مسح الوجه الخلفي"
+                                
+                                // Reset instruction after delay
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                                    self.updateInstruction()
+                                }
+                            }
+                            // Delete the invalid image
+                            try? FileManager.default.removeItem(at: finalImagePath)
+                            return
+                        }
+                        
+                        // Check if this is actually the same side as the front (duplicate scan)
+                        if isDuplicateCardSide(backText, isFrontSide: false) {
+                            print("This appears to be a duplicate of the front side")
+                            DispatchQueue.main.async {
+                                self.instructionLabel.text = "هذه نفس الواجهة الأمامية، يرجى مسح الوجه الخلفي للبطاقة"
+                                
+                                // Reset instruction after delay
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                                    self.updateInstruction()
+                                }
+                            }
+                            // Delete the invalid image
+                            try? FileManager.default.removeItem(at: finalImagePath)
+                            return
+                        }
+                
+                        // Valid back side - continue
+                        backImagePath = finalImagePath.path
+                        backSideContent = backText
+                        scanningStep = .completed
+                
+                        // Show completion message for back side
+                        DispatchQueue.main.async {
+                            self.instructionLabel.text = "تم مسح الوجه الخلفي بنجاح. جاري معالجة البيانات..."
+                            
+                            // Release camera resources as they are no longer needed
+                            if self.captureSession?.isRunning == true {
+                                self.captureSession.stopRunning()
+                            }
+                        }
+                
+                        // Delay before processing
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                            self.processCompleted()
+                        }
+                    } catch {
+                        print("Error processing back image: \(error)")
+                        DispatchQueue.main.async {
+                            self.handleError("Failed to process image")
+                        }
                     }
-                    // Delete the duplicate image
-                    try? FileManager.default.removeItem(at: finalImagePath)
-                    // Reset instruction after delay
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                        self.updateInstruction()
-                    }
-                    return
-                }
-                
-                backImagePath = finalImagePath.path
-                backImageHash = imageHash
-                scanningStep = .completed
-                
-                // Show completion message for back side
-                DispatchQueue.main.async {
-                    self.instructionLabel.text = "تم مسح الوجه الخلفي بنجاح. جاري معالجة البيانات..."
-                }
-                
-                // Delay before processing
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                    self.processCompleted()
                 }
             case .completed:
                 break
@@ -653,6 +913,69 @@ extension EmiratesIdScannerViewController {
     
     private func extractBackSideData(from text: String) {
         let lines = text.components(separatedBy: .newlines)
+        
+        // Extract Card Number from back (often clearer than front)
+        if let cardNumberRange = text.range(of: "(?:Card Number|رقم البطاقة)[^\\d]*(\\d+)", options: .regularExpression),
+           let match = String(text[cardNumberRange]).range(of: "(\\d+)$", options: .regularExpression) {
+            let cardNumber = String(String(text[cardNumberRange])[match]).trimmingCharacters(in: .whitespaces)
+            if !cardNumber.isEmpty {
+                extractedData["cardNumber"] = cardNumber
+            }
+        }
+        
+        // Extract Occupation
+        if let occupationRange = text.range(of: "(?:Occupation|المهنة)[^:]*:[^\\n]*([^\\n]+)", options: .regularExpression) {
+            let occupationText = String(text[occupationRange])
+            if let colonIndex = occupationText.firstIndex(of: ":"),
+               colonIndex != occupationText.endIndex {
+                let occupationValue = String(occupationText[occupationText.index(after: colonIndex)...]).trimmingCharacters(in: .whitespaces)
+                if !occupationValue.isEmpty {
+                    extractedData["occupation"] = occupationValue
+                }
+            }
+        }
+        
+        // Extract Employer
+        if let employerRange = text.range(of: "(?:Employer|صاحب العمل)[^:]*:[^\\n]*([^\\n]+)", options: .regularExpression) {
+            let employerText = String(text[employerRange])
+            if let colonIndex = employerText.firstIndex(of: ":"),
+               colonIndex != employerText.endIndex {
+                let employerValue = String(employerText[employerText.index(after: colonIndex)...]).trimmingCharacters(in: .whitespaces)
+                if !employerValue.isEmpty {
+                    extractedData["employer"] = employerValue
+                }
+            }
+        }
+        
+        // Extract Issuing Place
+        if let issuingPlaceRange = text.range(of: "(?:Issuing Place|مكان الإصدار)[^:]*:[^\\n]*([^\\n]+)", options: .regularExpression) {
+            let issuingPlaceText = String(text[issuingPlaceRange])
+            if let colonIndex = issuingPlaceText.firstIndex(of: ":"),
+               colonIndex != issuingPlaceText.endIndex {
+                let issuingPlaceValue = String(issuingPlaceText[issuingPlaceText.index(after: colonIndex)...]).trimmingCharacters(in: .whitespaces)
+                if !issuingPlaceValue.isEmpty {
+                    extractedData["issuingPlace"] = issuingPlaceValue
+                }
+            }
+        }
+        
+        // Extract MRZ data which may have more reliable info
+        let mrzLines = lines.filter { $0.filter { $0 == "<" }.count > 5 }
+        if !mrzLines.isEmpty {
+            extractedData["mrzData"] = mrzLines.joined(separator: "\n")
+            
+            // Try to extract embedded ID number from MRZ (format should contain 784YYYY7XXXXXXX)
+            let mrzText = mrzLines.joined()
+            if let mrzIdRange = mrzText.range(of: "784\\d{4}7\\d{7}", options: .regularExpression),
+               extractedData["idNumber"] == nil {
+                let idNumber = String(mrzText[mrzIdRange])
+                if idNumber.count >= 15 {
+                    // Format the ID with dashes for consistency
+                    let formatted = "\(idNumber.prefix(3))-\(idNumber.dropFirst(3).prefix(4))-\(idNumber.dropFirst(7).prefix(7))-\(idNumber.dropFirst(14).prefix(1))"
+                    extractedData["idNumber"] = formatted
+                }
+            }
+        }
         
         // Extract dates
         let dateMatches = text.ranges(of: "\\d{2}/\\d{2}/\\d{4}", options: .regularExpression)

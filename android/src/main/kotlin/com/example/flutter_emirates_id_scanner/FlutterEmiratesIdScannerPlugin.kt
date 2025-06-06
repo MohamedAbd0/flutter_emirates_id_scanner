@@ -74,7 +74,12 @@ class FlutterEmiratesIdScannerPlugin: FlutterPlugin, MethodCallHandler, Activity
               "issueDate" to data.getStringExtra("issueDate"),
               "expiryDate" to data.getStringExtra("expiryDate"),
               "frontImagePath" to data.getStringExtra("frontImagePath"),
-              "backImagePath" to data.getStringExtra("backImagePath")
+              "backImagePath" to data.getStringExtra("backImagePath"),
+              "cardNumber" to data.getStringExtra("cardNumber"),
+              "occupation" to data.getStringExtra("occupation"),
+              "employer" to data.getStringExtra("employer"),
+              "issuingPlace" to data.getStringExtra("issuingPlace"),
+              "mrzData" to data.getStringExtra("mrzData")
             )
             result.success(scanResult)
           }
