@@ -451,7 +451,7 @@ class EmiratesIdScannerActivity : AppCompatActivity() {
         // Check for issuing place field which appears on back side
         val hasIssuingPlace = cleanText.contains("ISSUING PLACE") || cleanText.contains("مكان الإصدار")
         
-        // Check for specific places like Abu Dhabi, Dubai, etc.
+        // Check for specific places like Abu Dhabi, Dubai, Al Ain, Sharjah, Ajman, Fujairah, Ras Al Khaimah, and Umm Al Quwain
         val hasEmirateLocation = cleanText.contains("ABU DHABI") || 
                                cleanText.contains("DUBAI") || 
                                cleanText.contains("SHARJAH") || 

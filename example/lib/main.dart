@@ -1,8 +1,7 @@
+import 'dart:developer';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_emirates_id_scanner/flutter_emirates_id_scanner.dart';
 
 void main() {
@@ -42,291 +41,231 @@ class MyApp extends StatelessWidget {
           ),
         ),
       ),
-      home: const EmiratesIdScannerScreen(),
+      home: EnhancedEmiratesId(),
       debugShowCheckedModeBanner: false,
     );
   }
 }
 
-class EmiratesIdScannerScreen extends StatefulWidget {
-  const EmiratesIdScannerScreen({super.key});
+class EnhancedEmiratesId extends StatefulWidget {
+  const EnhancedEmiratesId({Key? key}) : super(key: key);
 
   @override
-  State<EmiratesIdScannerScreen> createState() =>
-      _EmiratesIdScannerScreenState();
+  State<EnhancedEmiratesId> createState() => _EnhancedEmiratesIdState();
 }
 
-class _EmiratesIdScannerScreenState extends State<EmiratesIdScannerScreen> {
-  final _flutterEmiratesIdScannerPlugin = FlutterEmiratesIdScanner();
+class _EnhancedEmiratesIdState extends State<EnhancedEmiratesId> {
   EmiratesIdScanResult? _scanResult;
   bool _isScanning = false;
 
+  Future<void> _startScan() async {
+    setState(() => _isScanning = true);
+
+    try {
+      final scanner = FlutterEmiratesIdScanner();
+      final result = await scanner.scanEmiratesId();
+
+      print('Scan result: ${result?.toMap()}');
+
+      setState(() {
+        _scanResult = result;
+        _isScanning = false;
+      });
+    } catch (e) {
+      setState(() => _isScanning = false);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Scan failed: $e')),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      home: Scaffold(
-        appBar: AppBar(
-          title: const Text('Emirates ID Scanner Demo'),
-          backgroundColor: Colors.teal,
-          foregroundColor: Colors.white,
-        ),
-        body: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            children: [
-              // Header Card
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Enhanced Emirates ID Scanner'),
+        backgroundColor: Colors.blue[700],
+        foregroundColor: Colors.white,
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Scan Button
+            ElevatedButton.icon(
+              onPressed: _isScanning ? null : _startScan,
+              icon: _isScanning
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.camera_alt),
+              label: Text(_isScanning ? 'Scanning...' : 'Scan Emirates ID'),
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.all(16),
+                textStyle: const TextStyle(fontSize: 18),
+              ),
+            ),
+
+            const SizedBox(height: 24),
+
+            // Results Section
+            if (_scanResult != null) ...[
+              _buildResultCard(
+                title: 'Front Side Data',
+                icon: Icons.credit_card,
+                color: Colors.blue,
+                children: [
+                  _buildDataRow('ID Number', _scanResult!.idNumber),
+                  _buildDataRow('Name (English)', _scanResult!.fullName),
+                  _buildDataRow('Name (Arabic)', _scanResult!.fullNameArabic),
+                  _buildDataRow('Nationality', _scanResult!.nationality),
+                  _buildDataRow('Date of Birth', _scanResult!.dateOfBirth),
+                  _buildDataRow('Issue Date', _scanResult!.issueDate),
+                  _buildDataRow('Expiry Date', _scanResult!.expiryDate),
+                  _buildDataRow('Gender', _scanResult!.gender),
+                ],
+              ),
+              const SizedBox(height: 16),
+              _buildResultCard(
+                title: 'Back Side Data',
+                icon: Icons.badge,
+                color: Colors.green,
+                children: [
+                  _buildDataRow('Card Number', _scanResult!.cardNumber),
+                  _buildDataRow('Occupation', _scanResult!.occupation),
+                  _buildDataRow('Employer', _scanResult!.employer),
+                  _buildDataRow('Issuing Place', _scanResult!.issuingPlace),
+                ],
+              ),
+              const SizedBox(height: 16),
+              _buildResultCard(
+                title: 'Captured Images',
+                icon: Icons.image,
+                color: Colors.purple,
+                children: [
+                  _buildDataRow('Front Image', _scanResult!.frontImagePath),
+                  _buildDataRow('Back Image', _scanResult!.backImagePath),
+                ],
+              ),
+              if (_scanResult?.frontImagePath != null)
+                Image.file(File(_scanResult!.frontImagePath!)),
+
+              SizedBox(height: 16),
+              // Display back image if available
+              if (_scanResult?.backImagePath != null)
+                Image.file(File(_scanResult!.backImagePath!)),
+            ],
+
+            // Instructions
+            if (_scanResult == null && !_isScanning) ...[
               Card(
-                elevation: 4,
                 child: Padding(
-                  padding: const EdgeInsets.all(16.0),
+                  padding: const EdgeInsets.all(16),
                   child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Icon(
-                        Icons.credit_card,
-                        size: 48,
-                        color: Colors.teal,
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        'Emirates ID Scanner',
-                        style: Theme.of(
-                          context,
-                        ).textTheme.headlineSmall?.copyWith(
+                      Row(
+                        children: [
+                          Icon(Icons.info, color: Colors.blue[700]),
+                          const SizedBox(width: 8),
+                          const Text(
+                            'How to Use',
+                            style: TextStyle(
+                              fontSize: 18,
                               fontWeight: FontWeight.bold,
-                              color: Colors.teal,
                             ),
+                          ),
+                        ],
                       ),
-                      const SizedBox(height: 8),
+                      const SizedBox(height: 12),
                       const Text(
-                        'Scan both sides of your Emirates ID card to extract information automatically',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(color: Colors.grey),
+                        '1. Tap "Scan Emirates ID" button\n'
+                        '2. Point camera at Emirates ID front side\n'
+                        '3. Wait for automatic capture\n'
+                        '4. Flip to back side when prompted\n'
+                        '5. View extracted data below',
+                        style: TextStyle(fontSize: 16),
                       ),
                     ],
                   ),
                 ),
               ),
-
-              const SizedBox(height: 24),
-
-              // Scan Button
-              SizedBox(
-                width: double.infinity,
-                height: 56,
-                child: ElevatedButton.icon(
-                  onPressed: _isScanning ? null : _scanEmiratesId,
-                  icon: _isScanning
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.camera_alt),
-                  label: Text(_isScanning ? 'Scanning...' : 'Start Scanning'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.teal,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 24),
-
-              // Results Section
-              if (_scanResult != null) ...[
-                Text(
-                  'Scan Results',
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                        fontWeight: FontWeight.bold,
-                      ),
-                ),
-                const SizedBox(height: 16),
-                Expanded(
-                  child: SingleChildScrollView(
-                    child: Card(
-                      elevation: 2,
-                      child: Padding(
-                        padding: const EdgeInsets.all(16.0),
-                        child: Column(
-                          children: [
-                            _buildInfoRow('Full Name', _scanResult!.fullName),
-                            _buildInfoRow('ID Number', _scanResult!.idNumber),
-                            _buildInfoRow(
-                              'Nationality',
-                              _scanResult!.nationality,
-                            ),
-                            _buildInfoRow(
-                              'Date of Birth',
-                              _scanResult!.dateOfBirth,
-                            ),
-                            _buildInfoRow('Issue Date', _scanResult!.issueDate),
-                            _buildInfoRow(
-                              'Expiry Date',
-                              _scanResult!.expiryDate,
-                            ),
-                            const Divider(),
-                            _buildInfoRow(
-                              'Front Image',
-                              _scanResult!.frontImagePath,
-                              isPath: true,
-                            ),
-                            if (_scanResult?.frontImagePath != null)
-                              Padding(
-                                padding: const EdgeInsets.only(top: 8.0),
-                                child: Image.file(
-                                  File(_scanResult!.frontImagePath!),
-                                ),
-                              ),
-                            const SizedBox(height: 8),
-                            _buildInfoRow(
-                              'Back Image',
-                              _scanResult!.backImagePath,
-                              isPath: true,
-                            ),
-                            if (_scanResult?.backImagePath != null)
-                              Padding(
-                                padding: const EdgeInsets.only(top: 8.0),
-                                child: Image.file(
-                                  File(_scanResult!.backImagePath!),
-                                ),
-                              ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ] else
-                Expanded(
-                  child: Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(
-                          Icons.document_scanner_outlined,
-                          size: 64,
-                          color: Colors.grey[400],
-                        ),
-                        const SizedBox(height: 16),
-                        Text(
-                          'No scan results yet',
-                          style: TextStyle(
-                            fontSize: 18,
-                            color: Colors.grey[600],
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          'Tap the button above to start scanning',
-                          style: TextStyle(color: Colors.grey[500]),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
             ],
-          ),
+          ],
         ),
       ),
     );
   }
 
-  Widget _buildInfoRow(String label, String? value, {bool isPath = false}) {
+  Widget _buildResultCard({
+    required String title,
+    required IconData icon,
+    required Color color,
+    required List<Widget> children,
+  }) {
+    return Card(
+      elevation: 4,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(icon, color: color),
+                const SizedBox(width: 8),
+                Text(
+                  title,
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: color,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            ...children,
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDataRow(String label, String? value) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8.0),
+      padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SizedBox(
             width: 120,
             child: Text(
-              label,
+              '$label:',
               style: const TextStyle(
-                fontWeight: FontWeight.bold,
-                color: Colors.teal,
+                fontWeight: FontWeight.w500,
+                color: Colors.grey,
               ),
             ),
           ),
-          const SizedBox(width: 16),
           Expanded(
             child: Text(
-              value ?? 'Not found',
+              value?.isNotEmpty == true ? value! : 'Not detected',
               style: TextStyle(
-                color: value != null ? Colors.black87 : Colors.grey,
-                fontStyle: value != null ? FontStyle.normal : FontStyle.italic,
-                fontSize: isPath ? 12 : 14,
+                color: value?.isNotEmpty == true ? Colors.black : Colors.red,
+                fontWeight: value?.isNotEmpty == true
+                    ? FontWeight.normal
+                    : FontWeight.w300,
               ),
             ),
           ),
         ],
-      ),
-    );
-  }
-
-  Future<void> _scanEmiratesId() async {
-    setState(() {
-      _isScanning = true;
-      _scanResult = null;
-    });
-
-    try {
-      final result = await _flutterEmiratesIdScannerPlugin.scanEmiratesId();
-      setState(() {
-        _scanResult = result;
-      });
-
-      if (result != null) {
-        _showSuccessSnackBar();
-      }
-    } on PlatformException catch (e) {
-      // Don't show error message, just show guideline for next step
-      _showGuidanceMessage('Please scan the back side of your Emirates ID');
-      debugPrint(
-          'Platform exception: ${e.message ?? 'Unknown error occurred'}');
-    } catch (e) {
-      // Show gentle guidance instead of error
-      _showGuidanceMessage(
-          'Please try scanning again or scan the back side of your Emirates ID');
-      debugPrint('General exception: Failed to scan Emirates ID: $e');
-    } finally {
-      setState(() {
-        _isScanning = false;
-      });
-    }
-  }
-
-  void _showGuidanceMessage(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Row(
-          children: [
-            const Icon(Icons.info_outline, color: Colors.white),
-            const SizedBox(width: 8),
-            Expanded(child: Text(message)),
-          ],
-        ),
-        backgroundColor: Colors.blue,
-        duration: const Duration(seconds: 4),
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
-  }
-
-  void _showSuccessSnackBar() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Row(
-          children: [
-            Icon(Icons.check_circle, color: Colors.white),
-            SizedBox(width: 8),
-            Text('Emirates ID scanned successfully!'),
-          ],
-        ),
-        backgroundColor: Colors.green,
-        duration: Duration(seconds: 3),
       ),
     );
   }

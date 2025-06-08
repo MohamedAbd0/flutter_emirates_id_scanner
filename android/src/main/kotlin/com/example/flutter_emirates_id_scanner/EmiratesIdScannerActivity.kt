@@ -471,13 +471,15 @@ class EmiratesIdScannerActivity : AppCompatActivity() {
         // Check for issuing place field which appears on back side
         val hasIssuingPlace = cleanText.contains("ISSUING PLACE") || cleanText.contains("مكان الإصدار")
         
-        // Check for specific places like Abu Dhabi, Dubai, etc.
-        val hasEmirateLocation = cleanText.contains("ABU DHABI") || 
-                               cleanText.contains("DUBAI") || 
-                               cleanText.contains("SHARJAH") || 
-                               cleanText.contains("أبوظبي") || 
-                               cleanText.contains("دبي") || 
-                               cleanText.contains("الشارقة")
+        // Check for specific UAE emirates/places with comprehensive validation
+        val hasEmirateLocation = cleanText.contains("ABU DHABI") || cleanText.contains("أبوظبي") ||
+                               cleanText.contains("DUBAI") || cleanText.contains("دبي") ||
+                               cleanText.contains("SHARJAH") || cleanText.contains("الشارقة") ||
+                               cleanText.contains("AL AIN") || cleanText.contains("العين") ||
+                               cleanText.contains("AJMAN") || cleanText.contains("عجمان") ||
+                               cleanText.contains("FUJAIRAH") || cleanText.contains("الفجيرة") ||
+                               cleanText.contains("RAS AL KHAIMAH") || cleanText.contains("رأس الخيمة") ||
+                               cleanText.contains("UMM AL QUWAIN") || cleanText.contains("أم القيوين")
         
         // Check for the machine readable zone (MRZ) pattern with multiple '<' characters
         val hasMrzPattern = text.contains("<<<<<<") || text.count { it == '<' } > 5
@@ -1045,12 +1047,13 @@ class EmiratesIdScannerActivity : AppCompatActivity() {
                         Log.d(TAG, "Front image: $frontImagePath")
                         Log.d(TAG, "Back image: $backImagePath")
                         
-                        // Finish scanning with successful result
+                        // Extract data from both captured images and complete the process
+                        Log.d(TAG, "Starting OCR data extraction from captured images...")
+                        isCapturing = false // Reset capture state before data extraction
+                        
+                        // Process both images to extract OCR data and finish with results
                         runOnUiThread {
-                            finishWithResult(RESULT_SUCCESS, mapOf(
-                                "frontImagePath" to frontImagePath,
-                                "backImagePath" to backImagePath
-                            ))
+                            processCompleted()
                         }
                     } catch (e: Exception) {
                         Log.e(TAG, "Error processing back side: ${e.message}", e)
@@ -1079,11 +1082,14 @@ class EmiratesIdScannerActivity : AppCompatActivity() {
                 
                 val result = mapOf(
                     "fullName" to extractedData["fullName"],
+                    "nameEn" to extractedData["nameEn"],
+                    "nameAr" to extractedData["nameAr"],
                     "idNumber" to extractedData["idNumber"],
                     "nationality" to extractedData["nationality"],
                     "dateOfBirth" to extractedData["dateOfBirth"],
                     "issueDate" to extractedData["issueDate"],
                     "expiryDate" to extractedData["expiryDate"],
+                    "gender" to extractedData["gender"],
                     "frontImagePath" to frontImagePath,
                     "backImagePath" to backImagePath,
                     "cardNumber" to extractedData["cardNumber"],
@@ -1129,112 +1135,513 @@ class EmiratesIdScannerActivity : AppCompatActivity() {
     }
     
     private fun extractFrontSideData(text: String) {
-        val lines = text.split("\n")
+        val lines = text.split("\n").map { it.trim() }
+        val fullText = text.replace("\n", " ")
+        
+        Log.d(TAG, "Extracting front side data from text: $text")
         
         // Extract ID Number (pattern: XXX-XXXX-XXXXXXX-X)
-        val idPattern = Regex("(\\d{3}-\\d{4}-\\d{7}-\\d{1})")
+        val idPattern = Regex("(\\d{3}-\\d{4}-\\d{7}-\\d)")
         val idMatch = idPattern.find(text)
         extractedData["idNumber"] = idMatch?.value
+        Log.d(TAG, "Extracted ID Number: ${extractedData["idNumber"]}")
         
-        // Extract Name (usually appears after "Name" or before ID number)
-        for (i in lines.indices) {
-            val line = lines[i].trim()
-            if (line.matches(Regex(".*[A-Za-z]{3,}.*")) && 
-                !line.contains(Regex("\\d{3}-\\d{4}")) &&
-                line.length > 3) {
-                extractedData["fullName"] = line
-                break
+        // Extract English Name (after "Name:" label)
+        val nameEnPattern = Regex("Name\\s*:?\\s*([A-Z][a-zA-Z\\s]+)")
+        val nameEnMatch = nameEnPattern.find(text)
+        if (nameEnMatch != null && nameEnMatch.groups.size > 1) {
+            val nameEn = nameEnMatch.groups[1]?.value?.trim()
+            if (!nameEn.isNullOrBlank() && nameEn.length > 3) {
+                extractedData["nameEn"] = nameEn
+                extractedData["fullName"] = nameEn // Keep for backward compatibility
             }
         }
+        Log.d(TAG, "Extracted English Name: ${extractedData["nameEn"]}")
         
-        // Extract Nationality
-        val nationalityKeywords = listOf("NATIONALITY", "الجنسية", "UNITED ARAB EMIRATES", "UAE")
-        for (line in lines) {
-            for (keyword in nationalityKeywords) {
-                if (line.uppercase().contains(keyword)) {
-                    extractedData["nationality"] = line.trim()
+        // Extract Arabic Name (enhanced patterns for better detection)
+        var arabicNameFound = false
+        
+        // First try: Look for Arabic text after "Name" or "الاسم" labels
+        val arabicNamePatterns = listOf(
+            Regex("(?:Name|الاسم)\\s*[:\\/]?\\s*([\\u0600-\\u06FF\\s]+)"),
+            Regex("([\\u0600-\\u06FF]+(?:\\s+[\\u0600-\\u06FF]+){1,4})") // Arabic name pattern (2-5 words)
+        )
+        
+        for (pattern in arabicNamePatterns) {
+            val match = pattern.find(text)
+            if (match != null && match.groups.size > 1) {
+                val arabicName = match.groups[1]?.value?.trim()
+                if (!arabicName.isNullOrBlank() && arabicName.length > 4 && 
+                    !arabicName.contains("الجنسية") && !arabicName.contains("الميلاد") &&
+                    !arabicName.contains("الإصدار") && !arabicName.contains("الانتهاء")) {
+                    extractedData["nameAr"] = arabicName
+                    arabicNameFound = true
                     break
                 }
             }
         }
-    }
-    
-    private fun extractBackSideData(text: String) {
-        val lines = text.split("\n")
         
-        // Extract Card Number from back (often clearer than front)
-        val cardNumberPattern = Regex("(?:Card Number|رقم البطاقة)[^\\d]*(\\d+)")
-        val cardMatch = cardNumberPattern.find(text)
-        if (cardMatch != null && cardMatch.groups.size > 1) {
-            val cardNumber = cardMatch.groups[1]?.value
-            if (!cardNumber.isNullOrBlank()) {
-                extractedData["cardNumber"] = cardNumber.trim()
+        // Fallback: Look for pure Arabic lines (excluding labels and dates)
+        if (!arabicNameFound) {
+            for (line in lines) {
+                // Check if line contains primarily Arabic characters and is not a label
+                val arabicCharCount = line.count { it in '\u0600'..'\u06FF' }
+                val totalChars = line.replace("\\s".toRegex(), "").length
+                
+                if (arabicCharCount > 3 && totalChars > 5 && 
+                    arabicCharCount.toFloat() / totalChars > 0.6 && // More than 60% Arabic chars
+                    !line.contains("الاسم") && !line.contains("الجنسية") && 
+                    !line.contains("الميلاد") && !line.contains("الإصدار") &&
+                    !line.contains("الانتهاء") && !line.contains("الجنس") &&
+                    !line.contains("/") && !line.contains("-") && // Avoid dates
+                    !line.matches(Regex(".*\\d.*"))) { // Avoid lines with numbers
+                    extractedData["nameAr"] = line.trim()
+                    break
+                }
             }
         }
+        Log.d(TAG, "Extracted Arabic Name: ${extractedData["nameAr"]}")
         
-        // Extract Occupation
-        val occupationPattern = Regex("(?:Occupation|المهنة)[^:]*:[^\\n]*([^\\n]+)")
-        val occupationMatch = occupationPattern.find(text)
-        if (occupationMatch != null && occupationMatch.groups.size > 1) {
-            val occupation = occupationMatch.groups[1]?.value
-            if (!occupation.isNullOrBlank()) {
-                extractedData["occupation"] = occupation.trim()
-            }
-        }
+        // Extract Nationality (more precise patterns)
+        val nationalityPatterns = listOf(
+            Regex("Nationality\\s*:?\\s*([A-Za-z\\s]+)"),
+            Regex("الجنسية\\s*:?\\s*([A-Za-z\\s]+)")
+        )
         
-        // Extract Employer
-        val employerPattern = Regex("(?:Employer|صاحب العمل)[^:]*:[^\\n]*([^\\n]+)")
-        val employerMatch = employerPattern.find(text)
-        if (employerMatch != null && employerMatch.groups.size > 1) {
-            val employer = employerMatch.groups[1]?.value
-            if (!employer.isNullOrBlank()) {
-                extractedData["employer"] = employer.trim()
-            }
-        }
-        
-        // Extract Issuing Place
-        val issuingPlacePattern = Regex("(?:Issuing Place|مكان الإصدار)[^:]*:[^\\n]*([^\\n]+)")
-        val issuingPlaceMatch = issuingPlacePattern.find(text)
-        if (issuingPlaceMatch != null && issuingPlaceMatch.groups.size > 1) {
-            val issuingPlace = issuingPlaceMatch.groups[1]?.value
-            if (!issuingPlace.isNullOrBlank()) {
-                extractedData["issuingPlace"] = issuingPlace.trim()
-            }
-        }
-        
-        // Extract MRZ data which may have more reliable info
-        var mrzLines = lines.filter { it.count { c -> c == '<' } > 5 }
-        if (mrzLines.isNotEmpty()) {
-            extractedData["mrzData"] = mrzLines.joinToString("\n")
-            
-            // Try to extract embedded ID number from MRZ (format should contain 784YYYY7XXXXXXX)
-            val mrzIdPattern = Regex("784\\d{4}7\\d{7}")
-            val mrzIdMatch = mrzIdPattern.find(mrzLines.joinToString(""))
-            if (mrzIdMatch != null && extractedData["idNumber"].isNullOrBlank()) {
-                val idNumber = mrzIdMatch.value
-                if (idNumber.length >= 15) {
-                    // Format the ID with dashes for consistency
-                    val formatted = "${idNumber.substring(0, 3)}-${idNumber.substring(3, 7)}-${idNumber.substring(7, 14)}-${idNumber.substring(14)}"
-                    extractedData["idNumber"] = formatted
+        for (pattern in nationalityPatterns) {
+            val match = pattern.find(text)
+            if (match != null && match.groups.size > 1) {
+                val nationality = match.groups[1]?.value?.trim()
+                if (!nationality.isNullOrBlank()) {
+                    extractedData["nationality"] = nationality
+                    break
                 }
             }
         }
         
-        // Extract dates (pattern: DD/MM/YYYY)
-        val datePattern = Regex("(\\d{2}/\\d{2}/\\d{4})")
-        val dates = datePattern.findAll(text).map { it.value }.toList()
+        // Fallback: Look for common nationalities in lines
+        if (extractedData["nationality"].isNullOrBlank()) {
+            val commonNationalities = listOf("Egypt", "UAE", "Saudi Arabia", "Jordan", "Lebanon", "Syria", "Pakistan", "India", "Bangladesh")
+            for (line in lines) {
+                for (nationality in commonNationalities) {
+                    if (line.contains(nationality, ignoreCase = true)) {
+                        extractedData["nationality"] = nationality
+                        break
+                    }
+                }
+                if (!extractedData["nationality"].isNullOrBlank()) break
+            }
+        }
+        Log.d(TAG, "Extracted Nationality: ${extractedData["nationality"]}")
         
-        if (dates.size >= 2) {
-            extractedData["issueDate"] = dates[0]
-            extractedData["expiryDate"] = dates[1]
+        // Extract Date of Birth (enhanced patterns and fallbacks)
+        val dobPatterns = listOf(
+            Regex("(?:Date of Birth|تاريخ الميلاد|DOB|Birth)\\s*[:\\/]?\\s*(\\d{1,2}[\\/-]\\d{1,2}[\\/-]\\d{4})"),
+            Regex("(?:Date of Birth|تاريخ الميلاد|DOB|Birth)\\s*[:\\/]?\\s*(\\d{4}[\\/-]\\d{1,2}[\\/-]\\d{1,2})"),
+            Regex("(?:Date of Birth|تاريخ الميلاد|DOB|Birth)\\s*[:\\/]?\\s*(\\d{1,2}\\.\\d{1,2}\\.\\d{4})"),
+            Regex("(?:الميلاد)\\s*[:\\/]?\\s*(\\d{1,2}[\\/-]\\d{1,2}[\\/-]\\d{4})")
+        )
+        
+        var dobFound = false
+        for (pattern in dobPatterns) {
+            val dobMatch = pattern.find(text)
+            if (dobMatch != null && dobMatch.groups.size > 1) {
+                extractedData["dateOfBirth"] = dobMatch.groups[1]?.value
+                dobFound = true
+                break
+            }
         }
         
-        // Extract Date of Birth (look for specific patterns)
-        for (line in lines) {
-            if (line.contains("BIRTH") || line.contains("الميلاد") || line.contains("DOB")) {
-                val dobMatch = datePattern.find(line)
-                extractedData["dateOfBirth"] = dobMatch?.value
+        // Fallback 1: Look for date patterns near birth-related keywords in individual lines
+        if (!dobFound) {
+            for (line in lines) {
+                if (line.contains("Birth", ignoreCase = true) || line.contains("الميلاد") || line.contains("DOB")) {
+                    val datePatterns = listOf(
+                        Regex("(\\d{1,2}[\\/-]\\d{1,2}[\\/-]\\d{4})"),
+                        Regex("(\\d{4}[\\/-]\\d{1,2}[\\/-]\\d{1,2})"),
+                        Regex("(\\d{1,2}\\.\\d{1,2}\\.\\d{4})")
+                    )
+                    for (datePattern in datePatterns) {
+                        val dateMatch = datePattern.find(line)
+                        if (dateMatch != null) {
+                            extractedData["dateOfBirth"] = dateMatch.value
+                            dobFound = true
+                            break
+                        }
+                    }
+                    if (dobFound) break
+                }
+            }
+        }
+        
+        // Fallback 2: Look for the oldest date in the text (likely to be birth date)
+        if (!dobFound) {
+            val allDates = Regex("(\\d{1,2}[\\/-]\\d{1,2}[\\/-]\\d{4})").findAll(text).map { it.value }.toList()
+            if (allDates.isNotEmpty()) {
+                // Sort dates and pick the oldest one as potential birth date
+                val sortedDates = allDates.sortedBy { 
+                    try {
+                        val parts = it.split(Regex("[\\/-]"))
+                        if (parts.size == 3) {
+                            val year = parts[2].toInt()
+                            val month = parts[1].toInt()
+                            val day = parts[0].toInt()
+                            year * 10000 + month * 100 + day
+                        } else 0
+                    } catch (e: Exception) { 0 }
+                }
+                if (sortedDates.isNotEmpty()) {
+                    extractedData["dateOfBirth"] = sortedDates.first()
+                }
+            }
+        }
+        Log.d(TAG, "Extracted Date of Birth: ${extractedData["dateOfBirth"]}")
+        
+        // Extract Issue Date (enhanced patterns)
+        val issueDatePatterns = listOf(
+            Regex("(?:Issuing Date|تاريخ الإصدار|Issue Date|Issued)\\s*[:\\/]?\\s*(\\d{1,2}[\\/-]\\d{1,2}[\\/-]\\d{4})"),
+            Regex("(?:Issuing Date|تاريخ الإصدار|Issue Date|Issued)\\s*[:\\/]?\\s*(\\d{4}[\\/-]\\d{1,2}[\\/-]\\d{1,2})"),
+            Regex("(?:Issuing Date|تاريخ الإصدار|Issue Date|Issued)\\s*[:\\/]?\\s*(\\d{1,2}\\.\\d{1,2}\\.\\d{4})"),
+            Regex("(?:الإصدار)\\s*[:\\/]?\\s*(\\d{1,2}[\\/-]\\d{1,2}[\\/-]\\d{4})")
+        )
+        
+        var issueDateFound = false
+        for (pattern in issueDatePatterns) {
+            val issueDateMatch = pattern.find(text)
+            if (issueDateMatch != null && issueDateMatch.groups.size > 1) {
+                extractedData["issueDate"] = issueDateMatch.groups[1]?.value
+                issueDateFound = true
                 break
+            }
+        }
+        
+        // Fallback: Look for issue-related keywords in lines
+        if (!issueDateFound) {
+            for (line in lines) {
+                if (line.contains("Issue", ignoreCase = true) || line.contains("الإصدار") || line.contains("Issued")) {
+                    val datePatterns = listOf(
+                        Regex("(\\d{1,2}[\\/-]\\d{1,2}[\\/-]\\d{4})"),
+                        Regex("(\\d{4}[\\/-]\\d{1,2}[\\/-]\\d{1,2})"),
+                        Regex("(\\d{1,2}\\.\\d{1,2}\\.\\d{4})")
+                    )
+                    for (datePattern in datePatterns) {
+                        val dateMatch = datePattern.find(line)
+                        if (dateMatch != null) {
+                            extractedData["issueDate"] = dateMatch.value
+                            issueDateFound = true
+                            break
+                        }
+                    }
+                    if (issueDateFound) break
+                }
+            }
+        }
+        Log.d(TAG, "Extracted Issue Date: ${extractedData["issueDate"]}")
+        
+        // Extract Expiry Date (enhanced patterns)
+        val expiryDatePatterns = listOf(
+            Regex("(?:Expiry Date|تاريخ الانتهاء|Expires|Expiry|انتهاء)\\s*[:\\/]?\\s*(\\d{1,2}[\\/-]\\d{1,2}[\\/-]\\d{4})"),
+            Regex("(?:Expiry Date|تاريخ الانتهاء|Expires|Expiry|انتهاء)\\s*[:\\/]?\\s*(\\d{4}[\\/-]\\d{1,2}[\\/-]\\d{1,2})"),
+            Regex("(?:Expiry Date|تاريخ الانتهاء|Expires|Expiry|انتهاء)\\s*[:\\/]?\\s*(\\d{1,2}\\.\\d{1,2}\\.\\d{4})"),
+            Regex("(?:الانتهاء|انتهاء)\\s*[:\\/]?\\s*(\\d{1,2}[\\/-]\\d{1,2}[\\/-]\\d{4})")
+        )
+        
+        var expiryDateFound = false
+        for (pattern in expiryDatePatterns) {
+            val expiryDateMatch = pattern.find(text)
+            if (expiryDateMatch != null && expiryDateMatch.groups.size > 1) {
+                extractedData["expiryDate"] = expiryDateMatch.groups[1]?.value
+                expiryDateFound = true
+                break
+            }
+        }
+        
+        // Fallback: Look for expiry-related keywords in lines
+        if (!expiryDateFound) {
+            for (line in lines) {
+                if (line.contains("Expir", ignoreCase = true) || line.contains("الانتهاء") || 
+                    line.contains("انتهاء") || line.contains("Expires", ignoreCase = true)) {
+                    val datePatterns = listOf(
+                        Regex("(\\d{1,2}[\\/-]\\d{1,2}[\\/-]\\d{4})"),
+                        Regex("(\\d{4}[\\/-]\\d{1,2}[\\/-]\\d{1,2})"),
+                        Regex("(\\d{1,2}\\.\\d{1,2}\\.\\d{4})")
+                    )
+                    for (datePattern in datePatterns) {
+                        val dateMatch = datePattern.find(line)
+                        if (dateMatch != null) {
+                            extractedData["expiryDate"] = dateMatch.value
+                            expiryDateFound = true
+                            break
+                        }
+                    }
+                    if (expiryDateFound) break
+                }
+            }
+        }
+        
+        // Fallback: Look for the latest date in the text (likely to be expiry date)
+        if (!expiryDateFound) {
+            val allDates = Regex("(\\d{1,2}[\\/-]\\d{1,2}[\\/-]\\d{4})").findAll(text).map { it.value }.toList()
+            if (allDates.size >= 2) {
+                // Sort dates and pick the latest one as potential expiry date
+                val sortedDates = allDates.sortedByDescending { 
+                    try {
+                        val parts = it.split(Regex("[\\/-]"))
+                        if (parts.size == 3) {
+                            val year = parts[2].toInt()
+                            val month = parts[1].toInt()
+                            val day = parts[0].toInt()
+                            year * 10000 + month * 100 + day
+                        } else 0
+                    } catch (e: Exception) { 0 }
+                }
+                if (sortedDates.isNotEmpty()) {
+                    extractedData["expiryDate"] = sortedDates.first()
+                }
+            }
+        }
+        Log.d(TAG, "Extracted Expiry Date: ${extractedData["expiryDate"]}")
+        
+        // Extract Gender (enhanced patterns and fallbacks)
+        val genderPatterns = listOf(
+            Regex("(?:Sex|Gender|الجنس)\\s*[:\\/]?\\s*([MFmf]|Male|Female|MALE|FEMALE|ذكر|أنثى)"),
+            Regex("(?:Sex|Gender|الجنس)\\s*[:\\/]?\\s*([MF])"),
+            Regex("\\b(Male|Female|MALE|FEMALE)\\b"),
+            Regex("\\b(ذكر|أنثى)\\b"),
+            Regex("\\b([MF])\\b(?!\\d)") // M or F not followed by digits
+        )
+        
+        var genderFound = false
+        for (pattern in genderPatterns) {
+            val genderMatch = pattern.find(text)
+            if (genderMatch != null && genderMatch.groups.size > 1) {
+                val genderValue = genderMatch.groups[1]?.value?.uppercase()
+                when (genderValue) {
+                    "M", "MALE" -> {
+                        extractedData["gender"] = "M"
+                        genderFound = true
+                        break
+                    }
+                    "F", "FEMALE" -> {
+                        extractedData["gender"] = "F"
+                        genderFound = true
+                        break
+                    }
+                    "ذكر" -> {
+                        extractedData["gender"] = "M"
+                        genderFound = true
+                        break
+                    }
+                    "أنثى" -> {
+                        extractedData["gender"] = "F"
+                        genderFound = true
+                        break
+                    }
+                }
+            }
+        }
+        
+        // Fallback: Look for standalone M or F near gender indicators in lines
+        if (!genderFound) {
+            for (line in lines) {
+                if (line.contains("Sex", ignoreCase = true) || line.contains("Gender", ignoreCase = true) || 
+                    line.contains("الجنس")) {
+                    val sexMatch = Regex("\\b([MFmf])\\b").find(line)
+                    if (sexMatch != null) {
+                        val gender = sexMatch.value.uppercase()
+                        if (gender == "M" || gender == "F") {
+                            extractedData["gender"] = gender
+                            genderFound = true
+                            break
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Final fallback: Look for standalone M/F anywhere in text (with context validation)
+        if (!genderFound) {
+            val mfMatches = Regex("\\b([MF])\\b").findAll(text).toList()
+            if (mfMatches.size == 1) { // Only if there's exactly one M or F
+                extractedData["gender"] = mfMatches.first().value
+            }
+        }
+        Log.d(TAG, "Extracted Gender: ${extractedData["gender"]}")
+    }
+    
+    private fun extractBackSideData(text: String) {
+        val lines = text.split("\n").map { it.trim() }
+        
+        Log.d(TAG, "Extracting back side data from text: $text")
+        
+        // Extract Card Number (clear pattern from your image)
+        val cardNumberPatterns = listOf(
+            Regex("Card Number\\s*/\\s*رقم البطاقة\\s*([0-9]+)"),
+            Regex("(?:Card Number|رقم البطاقة)\\s*:?\\s*([0-9]+)"),
+            Regex("^([0-9]{8,10})$") // Standalone number pattern
+        )
+        
+        for (pattern in cardNumberPatterns) {
+            val match = pattern.find(text)
+            if (match != null && match.groups.size > 1) {
+                val cardNumber = match.groups[1]?.value?.trim()
+                if (!cardNumber.isNullOrBlank() && cardNumber.length >= 8) {
+                    extractedData["cardNumber"] = cardNumber
+                    break
+                }
+            }
+        }
+        
+        // Fallback: Look for 8-10 digit numbers in lines
+        if (extractedData["cardNumber"].isNullOrBlank()) {
+            for (line in lines) {
+                val numberMatch = Regex("\\b([0-9]{8,10})\\b").find(line)
+                if (numberMatch != null) {
+                    extractedData["cardNumber"] = numberMatch.value
+                    break
+                }
+            }
+        }
+        Log.d(TAG, "Extracted Card Number: ${extractedData["cardNumber"]}")
+        
+        // Extract Occupation (precise pattern from your image)
+        val occupationPatterns = listOf(
+            Regex("Occupation\\s*:?\\s*([A-Za-z\\s]+)(?:\\n|$)"),
+            Regex("المهنة\\s*:?\\s*([A-Za-z\\s]+)"),
+            Regex("Occupation\\s*:?\\s*(.+?)(?=\\n(?:Employer|صاحب العمل)|$)")
+        )
+        
+        for (pattern in occupationPatterns) {
+            val match = pattern.find(text)
+            if (match != null && match.groups.size > 1) {
+                val occupation = match.groups[1]?.value?.trim()
+                if (!occupation.isNullOrBlank() && occupation.length > 2) {
+                    extractedData["occupation"] = occupation
+                    break
+                }
+            }
+        }
+        Log.d(TAG, "Extracted Occupation: ${extractedData["occupation"]}")
+        
+        // Extract Employer (handle multi-line employer names)
+        val employerPatterns = listOf(
+            Regex("Employer\\s*:?\\s*(.+?)(?=\\n(?:Issuing Place|مكان الإصدار)|$)", RegexOption.DOT_MATCHES_ALL),
+            Regex("صاحب العمل\\s*:?\\s*(.+?)(?=\\n|$)"),
+            Regex("Employer\\s*:?\\s*([^\n]+(?:\\n[^\n:]+)*)")
+        )
+        
+        for (pattern in employerPatterns) {
+            val match = pattern.find(text)
+            if (match != null && match.groups.size > 1) {
+                val employer = match.groups[1]?.value?.trim()?.replace("\\s+".toRegex(), " ")
+                if (!employer.isNullOrBlank() && employer.length > 3) {
+                    extractedData["employer"] = employer
+                    break
+                }
+            }
+        }
+        
+        // Fallback: Look for employer in lines after "Employer"
+        if (extractedData["employer"].isNullOrBlank()) {
+            for (i in lines.indices) {
+                if (lines[i].contains("Employer", ignoreCase = true)) {
+                    val employerParts = mutableListOf<String>()
+                    
+                    // Extract from same line after colon
+                    val colonIndex = lines[i].indexOf(":")
+                    if (colonIndex != -1 && colonIndex < lines[i].length - 1) {
+                        val sameLine = lines[i].substring(colonIndex + 1).trim()
+                        if (sameLine.isNotEmpty()) employerParts.add(sameLine)
+                    }
+                    
+                    // Check next lines for continuation
+                    for (j in i + 1 until minOf(i + 3, lines.size)) {
+                        if (lines[j].isNotEmpty() && 
+                            !lines[j].contains(":", ignoreCase = true) &&
+                            !lines[j].contains("Issuing", ignoreCase = true) &&
+                            lines[j].matches(Regex("^[A-Za-z\\s]+$"))) {
+                            employerParts.add(lines[j])
+                        } else {
+                            break
+                        }
+                    }
+                    
+                    if (employerParts.isNotEmpty()) {
+                        extractedData["employer"] = employerParts.joinToString(" ").trim()
+                        break
+                    }
+                }
+            }
+        }
+        Log.d(TAG, "Extracted Employer: ${extractedData["employer"]}")
+        
+        // Extract Issuing Place with enhanced UAE emirate validation
+        val issuingPlacePatterns = listOf(
+            Regex("Issuing Place\\s*:?\\s*([A-Za-z\\s]+)"),
+            Regex("مكان الإصدار\\s*:?\\s*([A-Za-z\\s]+)"),
+            Regex("(?i)issuing\\s*place[^a-z]*([^\\n]{3,30})"),
+            Regex("(?i)مكان\\s*الإصدار[^أ-ي]*([^\\n]{3,30})")
+        )
+        
+        for (pattern in issuingPlacePatterns) {
+            val match = pattern.find(text)
+            if (match != null && match.groups.size > 1) {
+                var issuingPlace = match.groups[1]?.value?.trim()
+                if (!issuingPlace.isNullOrBlank()) {
+                    // Clean up the issuing place string
+                    issuingPlace = issuingPlace.replace(":", "").trim()
+                    issuingPlace = validateAndNormalizeEmiratePlace(issuingPlace)
+                    if (issuingPlace.isNotEmpty()) {
+                        extractedData["issuingPlace"] = issuingPlace
+                        break
+                    }
+                }
+            }
+        }
+        
+        // Fallback: Look for emirate names which could be issuing places
+        if (extractedData["issuingPlace"].isNullOrBlank()) {
+            val validatedPlace = findValidEmirateInText(text)
+            if (validatedPlace.isNotEmpty()) {
+                extractedData["issuingPlace"] = validatedPlace
+            }
+        }
+        
+        Log.d(TAG, "Extracted Issuing Place: ${extractedData["issuingPlace"]}")
+        
+        // Process MRZ data for additional validation and fallback data
+        val mrzLines = lines.filter { it.count { c -> c == '<' } > 5 }
+        if (mrzLines.isNotEmpty()) {
+            extractedData["mrzData"] = mrzLines.joinToString("\\n")
+            
+            // Extract ID number from MRZ if not found earlier
+            if (extractedData["idNumber"].isNullOrBlank()) {
+                val mrzIdPattern = Regex("784\\d{4}7\\d{7}")
+                val mrzIdMatch = mrzIdPattern.find(mrzLines.joinToString(""))
+                if (mrzIdMatch != null) {
+                    val idNumber = mrzIdMatch.value
+                    if (idNumber.length >= 15) {
+                        val formatted = "${idNumber.substring(0, 3)}-${idNumber.substring(3, 7)}-${idNumber.substring(7, 14)}-${idNumber.substring(14)}"
+                        extractedData["idNumber"] = formatted
+                    }
+                }
+            }
+            
+            // Extract name from MRZ if not found earlier  
+            if (extractedData["nameEn"].isNullOrBlank()) {
+                for (mrzLine in mrzLines) {
+                    if (mrzLine.length > 30) {
+                        val nameMatch = Regex("([A-Z]+)<+([A-Z<]+)").find(mrzLine)
+                        if (nameMatch != null && nameMatch.groups.size > 2) {
+                            val lastName = nameMatch.groups[1]?.value?.replace("<", " ")?.trim()
+                            val firstName = nameMatch.groups[2]?.value?.replace("<", " ")?.trim()
+                            if (!lastName.isNullOrBlank() && !firstName.isNullOrBlank()) {
+                                extractedData["nameEn"] = "$firstName $lastName"
+                                extractedData["fullName"] = "$firstName $lastName" // Backward compatibility
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -1465,5 +1872,134 @@ class EmiratesIdScannerActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    /**
+     * Validates and normalizes UAE emirate place names
+     * Returns normalized English name or empty string if not valid
+     */
+    private fun validateAndNormalizeEmiratePlace(place: String): String {
+        val cleanPlace = place.uppercase().trim()
+        
+        // Map of possible variations to standard English names
+        val emirateMap = mapOf(
+            // Abu Dhabi variations
+            "ABU DHABI" to "Abu Dhabi",
+            "ABUDHABI" to "Abu Dhabi", 
+            "أبوظبي" to "Abu Dhabi",
+            "أبو ظبي" to "Abu Dhabi",
+            
+            // Dubai variations
+            "DUBAI" to "Dubai",
+            "دبي" to "Dubai",
+            
+            // Sharjah variations
+            "SHARJAH" to "Sharjah",
+            "الشارقة" to "Sharjah",
+            
+            // Al Ain variations
+            "AL AIN" to "Al Ain",
+            "ALAIN" to "Al Ain",
+            "AL-AIN" to "Al Ain",
+            "العين" to "Al Ain",
+            
+            // Ajman variations
+            "AJMAN" to "Ajman",
+            "عجمان" to "Ajman",
+            
+            // Fujairah variations
+            "FUJAIRAH" to "Fujairah",
+            "الفجيرة" to "Fujairah",
+            
+            // Ras Al Khaimah variations
+            "RAS AL KHAIMAH" to "Ras Al Khaimah",
+            "RAS AL-KHAIMAH" to "Ras Al Khaimah",
+            "RASALKHAIMAH" to "Ras Al Khaimah",
+            "رأس الخيمة" to "Ras Al Khaimah",
+            
+            // Umm Al Quwain variations
+            "UMM AL QUWAIN" to "Umm Al Quwain",
+            "UMM AL-QUWAIN" to "Umm Al Quwain",
+            "UMMALQUWAIN" to "Umm Al Quwain",
+            "أم القيوين" to "Umm Al Quwain"
+        )
+        
+        // Try exact match first
+        emirateMap[cleanPlace]?.let { return it }
+        
+        // Try partial matches for cases where OCR adds/removes characters
+        for ((key, value) in emirateMap) {
+            if (cleanPlace.contains(key) || key.contains(cleanPlace)) {
+                // Additional validation to prevent false positives
+                val similarity = calculateStringSimilarity(cleanPlace, key)
+                if (similarity > 0.7) { // 70% similarity threshold
+                    return value
+                }
+            }
+        }
+        
+        return ""
+    }
+    
+    /**
+     * Finds valid UAE emirate names in the given text
+     */
+    private fun findValidEmirateInText(text: String): String {
+        val cleanText = text.uppercase()
+        
+        // List of all valid UAE emirate patterns
+        val emiratePatterns = listOf(
+            "ABU DHABI", "أبوظبي", "أبو ظبي",
+            "DUBAI", "دبي",
+            "SHARJAH", "الشارقة", 
+            "AL AIN", "العين", "ALAIN",
+            "AJMAN", "عجمان",
+            "FUJAIRAH", "الفجيرة",
+            "RAS AL KHAIMAH", "رأس الخيمة", "RASALKHAIMAH",
+            "UMM AL QUWAIN", "أم القيوين", "UMMALQUWAIN"
+        )
+        
+        for (pattern in emiratePatterns) {
+            if (cleanText.contains(pattern)) {
+                return validateAndNormalizeEmiratePlace(pattern)
+            }
+        }
+        
+        return ""
+    }
+    
+    /**
+     * Calculates string similarity using Levenshtein distance
+     */
+    private fun calculateStringSimilarity(s1: String, s2: String): Double {
+        val longer = if (s1.length > s2.length) s1 else s2
+        val shorter = if (s1.length > s2.length) s2 else s1
+        
+        if (longer.isEmpty()) return 1.0
+        
+        val distance = levenshteinDistance(longer, shorter)
+        return (longer.length - distance) / longer.length.toDouble()
+    }
+    
+    /**
+     * Calculates Levenshtein distance between two strings
+     */
+    private fun levenshteinDistance(s1: String, s2: String): Int {
+        val dp = Array(s1.length + 1) { IntArray(s2.length + 1) }
+        
+        for (i in 0..s1.length) dp[i][0] = i
+        for (j in 0..s2.length) dp[0][j] = j
+        
+        for (i in 1..s1.length) {
+            for (j in 1..s2.length) {
+                dp[i][j] = if (s1[i - 1] == s2[j - 1]) {
+                    dp[i - 1][j - 1]
+                } else {
+                    1 + minOf(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1])
+                }
+            }
+        }
+        
+        return dp[s1.length][s2.length]
     }
 }
